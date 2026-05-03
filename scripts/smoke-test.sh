@@ -61,6 +61,10 @@ printf '# Smoke test profile\n' > "${VAULT}/profile/me.md"
 echo '{}' > "${VAULT}/.brain/state/capture-markers.json"
 : > "${VAULT}/.brain/state/capture-queue.jsonl"
 
+# Librarian-flow MCP tools are gated. The smoke test exercises them
+# via MCP, so opt them in for the duration of this run.
+export BRAIN_EXPOSE_LIBRARIAN_TOOLS=1
+
 CAPTURE_PRE_COUNT="$(/bin/ls "${VAULT}/captures" 2>/dev/null | wc -l | tr -d ' ')"
 
 mcp() {
@@ -82,10 +86,25 @@ mcp() {
     | tail -n 1
 }
 
-echo "--- 1. tools/list ---"
+echo "--- 1. tools/list (default + librarian flag) ---"
+# With BRAIN_EXPOSE_LIBRARIAN_TOOLS=1 (set above): 6 always-on tools
+# (read, search, search-finalize, capture, index, status) + 3 gated
+# librarian-* tools = 9.
 n=$(mcp "tools/list" '{}' | jq '.result.tools | length')
-echo "  tool_count=${n}  (expected 11)"
-[[ "${n}" == "11" ]] || { echo "FAIL"; exit 1; }
+echo "  tool_count=${n}  (expected 9 with flag)"
+[[ "${n}" == "9" ]] || { echo "FAIL: tool_count=${n}"; exit 1; }
+# And the always-on default surface is 6.
+n_default=$(BRAIN_EXPOSE_LIBRARIAN_TOOLS= /usr/bin/env -u BRAIN_EXPOSE_LIBRARIAN_TOOLS \
+  bash -c '
+    printf "%s\n%s\n%s\n" \
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"smoke\",\"version\":\"0\"}}}" \
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}" \
+      "{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"tools/list\",\"params\":{}}" \
+    | BRAIN_VAULT_ROOT="'"${VAULT}"'" node "'"${SERVER}"'" 2>/dev/null \
+    | tail -n 1
+  ' | jq '.result.tools | length')
+echo "  tool_count_default=${n_default}  (expected 6 without flag)"
+[[ "${n_default}" == "6" ]] || { echo "FAIL: default tool_count=${n_default}"; exit 1; }
 
 echo "--- 2. brain-status ---"
 mcp "tools/call" '{}' "brain-status" \
@@ -111,10 +130,15 @@ echo "--- 6. brain-read PATH_TRAVERSAL rejected ---"
 mcp "tools/call" '{"path":"../../etc/passwd"}' "brain-read" \
   | jq -r '.result.content[0].text | fromjson | "  error_code=\(.error.code)"'
 
+echo "--- 6b. brain-read mode=provenance (folded from brain-read-provenance) ---"
+# No sidecar yet for profile/me.md → expect found=false, NO_SIDECAR.
+mcp "tools/call" '{"path":"profile/me.md","mode":"provenance"}' "brain-read" \
+  | jq -r '.result.content[0].text | fromjson | "  exists=\(.exists) mode=\(.mode) error=\(.error.code // "none")"'
+
 mkdir -p /tmp/brain-smoke && echo "TOKEN=hunter2" > /tmp/brain-smoke/.env
-echo "--- 7. brain-ingest .env rejected ---"
-mcp "tools/call" '{"source_path":"/tmp/brain-smoke/.env"}' "brain-ingest" \
-  | jq -r '.result.content[0].text | fromjson | "  error_code=\(.error.code)"'
+echo "--- 7. brain-librarian ingest .env rejected (CLI) ---"
+node "${ROOT}/server/dist/librarian/cli.js" ingest --source /tmp/brain-smoke/.env \
+  | jq -r '"  error_code=\(.error.code)"'
 rm -rf /tmp/brain-smoke
 
 echo "--- 8. sacred-paths-guard exit 2 on Write to projects/ ---"
@@ -490,6 +514,53 @@ POST_CAPS=$(/bin/ls "${VAULT}/captures" 2>/dev/null | wc -l | tr -d ' ')
 [[ "${LAST_LINE}" == *"created=1"* && $((POST_CAPS - PRE_CAPS)) -ge 1 ]] \
   && echo "  oversized delta truncated and classified OK" \
   || { echo "  FAIL"; exit 1; }
+
+echo "--- 21c. brain-capture worker emits cost_usd / token fields when fake reports them ---"
+# Run the worker once with the fake stubbing cost + tokens. Then assert
+# the new fields appear in the worker log line and that brain-cost
+# picks them up.
+: > "${VAULT}/.brain/state/capture-queue.jsonl"
+JSONL_COST="${FAKE_PROJ}/encoded-cwd/smoke-session-cost.jsonl"
+echo '{"role":"user","content":"cost-aware run"}' > "${JSONL_COST}"
+BRAIN_VAULT_ROOT="${VAULT}" BRAIN_CLAUDE_PROJECTS="${FAKE_PROJ}" \
+  CLAUDE_BIN="${ROOT}/scripts/fake-claude-delta-classifier.sh" \
+  BRAIN_FAKE_SLUG=smoke-cost \
+  BRAIN_FAKE_DELTA_OUTCOME=CAPTURE_CREATED \
+  BRAIN_FAKE_COST_USD=0.0234 \
+  BRAIN_FAKE_IN_TOKENS=1500 \
+  BRAIN_FAKE_OUT_TOKENS=240 \
+  "${ROOT}/capture/brain-capture.sh"
+LAST_LINE="$(/usr/bin/tail -n 1 "${VAULT}/.brain/log/capture-$(date +%Y-%m-%d).log")"
+echo "  log_tail: ${LAST_LINE}"
+[[ "${LAST_LINE}" == *"cost_usd=0.023400"* && "${LAST_LINE}" == *"in_tokens=1500"* && "${LAST_LINE}" == *"out_tokens=240"* ]] \
+  && echo "  cost fields present in log OK" \
+  || { echo "  FAIL: missing cost fields"; exit 1; }
+
+# Aggregate via CLI for a date-bracketed query, and via brain-status
+# for the always-on summary view. Both should pick up the run.
+TODAY="$(date +%Y-%m-%d)"
+COST_OUT="$(node "${ROOT}/server/dist/librarian/cli.js" cost --since "${TODAY}" --until "${TODAY}")"
+COST_TOTAL="$(echo "${COST_OUT}" | jq -r '.total_cost_usd')"
+COST_RUNS="$(echo "${COST_OUT}" | jq -r '.capture.runs')"
+STATUS_TODAY="$(mcp "tools/call" '{}' "brain-status" \
+  | jq -r '.result.content[0].text | fromjson | .usage.today_usd')"
+echo "  cost CLI: total_usd=${COST_TOTAL} capture_runs=${COST_RUNS}; status.usage.today_usd=${STATUS_TODAY}"
+# Sum may include other test runs in the same vault; just assert >= 0.0234
+# and that capture.runs is at least 1.
+[[ "${COST_RUNS}" -ge "1" ]] \
+  && /usr/bin/python3 -c "import sys; sys.exit(0 if float('${COST_TOTAL}') >= 0.0234 else 1)" \
+  && /usr/bin/python3 -c "import sys; sys.exit(0 if float('${STATUS_TODAY}') >= 0.0234 else 1)" \
+  && echo "  cost CLI + brain-status.usage both pick up the worker run OK" \
+  || { echo "  FAIL: cli total=${COST_TOTAL} runs=${COST_RUNS} status_today=${STATUS_TODAY}"; exit 1; }
+# Clean up the cost-test session marker.
+/usr/bin/python3 -c "
+import json
+p = '${VAULT}/.brain/state/capture-markers.json'
+d = json.load(open(p))
+d.pop('smoke-session-cost', None)
+json.dump(d, open(p, 'w'))
+"
+
 # Cleanup the bigdelta marker so subsequent runs aren't confused.
 /usr/bin/python3 -c "
 import json
@@ -499,10 +570,11 @@ d.pop('smoke-session-bigdelta', None)
 json.dump(d, open(p, 'w'))
 "
 
-# Cleanup capture files written by 19 + 21 + 21b
+# Cleanup capture files written by 19 + 21 + 21b + 21c
 /usr/bin/find "${VAULT}/captures" -name 'session-smoke-session-noop-*.md' -delete 2>/dev/null || true
 /usr/bin/find "${VAULT}/captures" -name 'session-smoke-session-queued-*.md' -delete 2>/dev/null || true
 /usr/bin/find "${VAULT}/captures" -name 'session-smoke-session-bigdelta-*.md' -delete 2>/dev/null || true
+/usr/bin/find "${VAULT}/captures" -name 'session-smoke-session-cost-*.md' -delete 2>/dev/null || true
 
 # Cleanup test fixtures and the smoke marker entries.
 rm -rf "$(dirname "${FAKE_PROJ}")"
@@ -701,6 +773,117 @@ rm -f "${VAULT}/projects/imp-fixture.md"
 rm -f "${VAULT}/.brain/provenance/projects/imp-fixture.json"
 rm -f "${VAULT}/projects/tier-active.md" "${VAULT}/projects/tier-done.md"
 rm -f "${VAULT}/.brain/provenance/projects/tier-active.json" "${VAULT}/.brain/provenance/projects/tier-done.json"
+
+echo "--- 25. de-dup: identical bullets collapse to one on deterministic append ---"
+# Two captures with identical body for the same slug. Deterministic
+# consolidate (no --synthesize) appends bullets one at a time; the
+# second append sees the first already present and skips.
+DEDUP_TS=$(date +%s)
+cat > "${VAULT}/captures/session-dedup1-${DEDUP_TS}.md" <<EOF
+---
+session_id: dedup1
+created_at: 2026-05-03T10:00:00Z
+trigger: manual
+project_slug: dedup-smoke
+capture_kind: finding
+---
+## Findings
+- Identical-bullet dedup test; should appear exactly once on the page.
+EOF
+cat > "${VAULT}/captures/session-dedup2-${DEDUP_TS}.md" <<EOF
+---
+session_id: dedup2
+created_at: 2026-05-03T11:00:00Z
+trigger: manual
+project_slug: dedup-smoke
+capture_kind: finding
+---
+## Findings
+- Identical-bullet dedup test; should appear exactly once on the page.
+EOF
+BRAIN_VAULT_ROOT="${VAULT}" node "${ROOT}/server/dist/librarian/cli.js" consolidate >/dev/null
+DEDUP_BULLETS=$(grep -c "Identical-bullet dedup test" "${VAULT}/projects/dedup-smoke.md" 2>/dev/null || echo 0)
+echo "  bullets_on_page=${DEDUP_BULLETS}"
+[[ "${DEDUP_BULLETS}" == "1" ]] || { echo "  FAIL: expected 1 bullet, got ${DEDUP_BULLETS}"; exit 1; }
+echo "  dedup OK"
+
+echo "--- 26. importer input cap: oversized project triggers _truncation-note ---"
+# Write a config override capping import input at 10 KB, then build
+# a fixture whose notes total well over that. plan-imports should
+# emit a _truncation-note source and the prompt should mention it.
+mkdir -p "${VAULT}/.brain"
+cat > "${VAULT}/.brain/config.yaml" <<EOF
+librarian:
+  import_max_input_bytes: 10240
+EOF
+BIG_PROJ_SRC="$(mktemp -d -t brain-bigimport-smoke.XXXXXX)/projects"
+mkdir -p "${BIG_PROJ_SRC}/big-fixture-2026-05-03/notes"
+cat > "${BIG_PROJ_SRC}/big-fixture-2026-05-03/meta.yaml" <<EOF
+project: big-fixture-2026-05-03
+created: 2026-05-03
+status: active
+owner: bjorn
+tags: [smoke]
+EOF
+echo "# Big fixture — current state in one line." > "${BIG_PROJ_SRC}/big-fixture-2026-05-03/README.md"
+# 60 notes × ~500 bytes ≈ 30 KB total, well past the 10 KB cap.
+BRAIN_NOTES_DIR="${BIG_PROJ_SRC}/big-fixture-2026-05-03/notes" /usr/bin/python3 - <<'PY'
+import os
+notes_dir = os.environ["BRAIN_NOTES_DIR"]
+for i in range(1, 61):
+    fname = f"note-{i:02d}.md"
+    body = f"# note {i}\n" + ("lorem ipsum dolor sit amet " * 18)
+    open(os.path.join(notes_dir, fname), "w").write(body)
+PY
+# Pre-clean.
+rm -f "${VAULT}/projects/big-fixture.md" 2>/dev/null
+BRAIN_VAULT_ROOT="${VAULT}" BRAIN_PROJECTS_SOURCE="${BIG_PROJ_SRC}" \
+  node "${ROOT}/server/dist/librarian/cli.js" import-pointers --source "${BIG_PROJ_SRC}" >/dev/null
+PLAN_BIG_OUT="$(BRAIN_VAULT_ROOT="${VAULT}" BRAIN_PROJECTS_SOURCE="${BIG_PROJ_SRC}" \
+  node "${ROOT}/server/dist/librarian/cli.js" plan-imports --source "${BIG_PROJ_SRC}" --status active)"
+HAS_TRUNCATION=$(echo "${PLAN_BIG_OUT}" | jq -r '.pending_imports[0].prompt' | grep -c "_truncation-note" || echo 0)
+HAS_TRUNCATION_BODY=$(echo "${PLAN_BIG_OUT}" | jq -r '.pending_imports[0].prompt' | grep -c "INPUT TRUNCATED" || echo 0)
+echo "  truncation_note_in_prompt=${HAS_TRUNCATION} truncation_body_in_prompt=${HAS_TRUNCATION_BODY}"
+[[ "${HAS_TRUNCATION}" -ge 1 && "${HAS_TRUNCATION_BODY}" -ge 1 ]] \
+  || { echo "  FAIL: truncation note not emitted"; exit 1; }
+echo "  importer cap OK"
+# Clean up the cap override so subsequent runs aren't affected.
+rm -f "${VAULT}/.brain/config.yaml"
+rm -rf "$(/usr/bin/dirname "${BIG_PROJ_SRC}")"
+rm -f "${VAULT}/projects/big-fixture.md" "${VAULT}/.brain/provenance/projects/big-fixture.json"
+
+echo "--- 27. brain-librarian lint sweeps stale traces and trims old session lines ---"
+# Stale search-run trace + stale synthesis-plan; should both be swept.
+STALE_RUN="${VAULT}/.brain/search/runs/01STALE0000000000000000000.json"
+mkdir -p "$(/usr/bin/dirname "${STALE_RUN}")"
+echo '{"search_id":"01STALE","investigator":{"status":"pending_parent_dispatch"}}' > "${STALE_RUN}"
+/usr/bin/touch -t 202401010000 "${STALE_RUN}"
+STALE_PLAN="${VAULT}/.brain/state/synthesis-plans/PLAN_STALE_0001.json"
+mkdir -p "$(/usr/bin/dirname "${STALE_PLAN}")"
+echo '{"plan_id":"PLAN_STALE_0001"}' > "${STALE_PLAN}"
+/usr/bin/touch -t 202401010000 "${STALE_PLAN}"
+# Active-sessions: chatty session (old + recent → keep all), old-only session (drop all).
+SESSIONS_LOG="${VAULT}/.brain/state/active-sessions.jsonl"
+cat > "${SESSIONS_LOG}" <<EOF
+{"session_id":"chatty","last_seen_at":"2024-01-01T00:00:00Z"}
+{"session_id":"chatty","last_seen_at":"2026-05-01T00:00:00Z"}
+{"session_id":"old-only","last_seen_at":"2024-01-01T00:00:00Z"}
+EOF
+LINT_OUT="$(BRAIN_VAULT_ROOT="${VAULT}" \
+  node "${ROOT}/server/dist/librarian/cli.js" lint)"
+echo "  ${LINT_OUT}"
+echo "${LINT_OUT}" | jq -e '
+  .swept_search_runs == 1
+  and .swept_synthesis_plans == 1
+  and .trimmed_session_lines == 1
+  and .preserved_session_lines == 2
+  and .errors == 0
+' >/dev/null || { echo "  FAIL"; exit 1; }
+[[ ! -f "${STALE_RUN}" ]] || { echo "  FAIL: stale search-run not removed"; exit 1; }
+[[ ! -f "${STALE_PLAN}" ]] || { echo "  FAIL: stale synthesis-plan not removed"; exit 1; }
+grep -q "chatty" "${SESSIONS_LOG}" || { echo "  FAIL: chatty session was wrongly trimmed"; exit 1; }
+! grep -q "old-only" "${SESSIONS_LOG}" || { echo "  FAIL: old-only session was wrongly preserved"; exit 1; }
+echo "  lint sweep OK"
 
 CAPTURE_POST_COUNT="$(/bin/ls "${VAULT}/captures" 2>/dev/null | wc -l | tr -d ' ')"
 echo "---"

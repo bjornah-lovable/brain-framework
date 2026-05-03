@@ -6,6 +6,7 @@
  *   brain-librarian consolidate [--synthesize|--no-synthesize]
  *   brain-librarian plan-synthesis
  *   brain-librarian apply-synthesis <plan_id> <results-file>
+ *   brain-librarian cost [--since YYYY-MM-DD] [--until YYYY-MM-DD]
  *   brain-librarian status
  *   brain-librarian lint     (placeholder)
  *   brain-librarian rollover (placeholder)
@@ -20,13 +21,16 @@ import { vaultPaths } from "../lib/vault.js";
 import { brainLibrarianPlanSynthesis } from "../tools/librarian-plan-synthesis.js";
 import { brainLibrarianApplySynthesis } from "../tools/librarian-apply-synthesis.js";
 import { brainCapture } from "../tools/capture.js";
+import { brainCost } from "../tools/cost.js";
+import { brainIngest } from "../tools/ingest.js";
 import { importPointers } from "./import-pointers.js";
 import { brainLibrarianPlanImports } from "../tools/librarian-plan-imports.js";
 import { loadConfig } from "../lib/config.js";
+import { lint } from "./lint.js";
 
 function printUsage(): void {
   console.error(
-    "usage: brain-librarian <consolidate|plan-synthesis|apply-synthesis|capture|import-pointers|plan-imports|apply-imports|status|lint|rollover|config-export> [...]",
+    "usage: brain-librarian <consolidate|plan-synthesis|apply-synthesis|capture|cost|import-pointers|plan-imports|apply-imports|status|lint|rollover|config-export> [...]",
   );
 }
 
@@ -238,6 +242,37 @@ async function main(): Promise<void> {
       );
       return;
     }
+    case "cost": {
+      // Optional --since YYYY-MM-DD --until YYYY-MM-DD.
+      const args = process.argv.slice(3);
+      let since: string | undefined;
+      let until: string | undefined;
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === "--since" && args[i + 1]) since = args[++i];
+        else if (args[i] === "--until" && args[i + 1]) until = args[++i];
+      }
+      console.log(JSON.stringify(brainCost({ since, until })));
+      return;
+    }
+    case "ingest": {
+      if (!source) {
+        console.error(
+          "usage: brain-librarian ingest --source <abs-path> [--topic-hint <hint>]",
+        );
+        process.exit(2);
+      }
+      const args = process.argv.slice(3);
+      let topicHint: string | undefined;
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === "--topic-hint" && args[i + 1]) topicHint = args[++i];
+      }
+      const input: { source_path: string; topic_hint?: string } = {
+        source_path: source,
+      };
+      if (topicHint) input.topic_hint = topicHint;
+      console.log(JSON.stringify(brainIngest(input)));
+      return;
+    }
     case "config-export": {
       // Print shell-evaluable KEY=VAL lines for bash to source.
       // Used by capture/brain-capture.sh to pick up budgets / models /
@@ -255,7 +290,16 @@ async function main(): Promise<void> {
       console.log(lines.join("\n"));
       return;
     }
-    case "lint":
+    case "lint": {
+      const lock = acquireLibrarianLock({ waitMs });
+      try {
+        const result = lint();
+        console.log(JSON.stringify(result));
+      } finally {
+        lock.release();
+      }
+      return;
+    }
     case "rollover": {
       const lock = acquireLibrarianLock({ waitMs });
       try {

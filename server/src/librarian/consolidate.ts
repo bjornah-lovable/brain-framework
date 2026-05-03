@@ -40,7 +40,11 @@ import {
   type SynthesisOutput,
   type SynthesizeInput,
 } from "./synthesize.js";
-import { normalizeStatus, readImportSources } from "./import.js";
+import {
+  normalizeStatus,
+  readImportSources,
+  TRUNCATION_NOTE_REL_PATH,
+} from "./import.js";
 import {
   savePlan,
   type PendingSynthesisTask,
@@ -185,6 +189,15 @@ export function gatherSynthesizableTasks(
       }
       continue;
     }
+    // YAML auto-parses unquoted ISO timestamps to Date; downstream
+    // code expects strings, so coerce.
+    const rawCreatedAt = doc.data["created_at"];
+    const createdAt =
+      typeof rawCreatedAt === "string"
+        ? rawCreatedAt
+        : rawCreatedAt instanceof Date
+          ? rawCreatedAt.toISOString()
+          : new Date().toISOString();
     parsed.push({
       src,
       fname,
@@ -193,9 +206,7 @@ export function gatherSynthesizableTasks(
       sessionId: (doc.data["session_id"] as string | undefined) ?? "_unknown",
       trigger: (doc.data["trigger"] as string | undefined) ?? "manual",
       captureKind: doc.data["capture_kind"] as string | undefined,
-      createdAt:
-        (doc.data["created_at"] as string | undefined) ??
-        new Date().toISOString(),
+      createdAt,
     });
   }
 
@@ -302,6 +313,7 @@ export function gatherSynthesizableTasks(
         reason: "synthesize_disabled",
       });
     } catch (err) {
+      void err;
       errors += items.length;
       appendFileSync(
         resolve(v.logs, `librarian-${today()}.log`),
@@ -494,6 +506,10 @@ export async function consolidate(
     per_block: [],
   };
 
+  let synthCostUsd = 0;
+  let synthInTokens = 0;
+  let synthOutTokens = 0;
+  let synthCacheReadTokens = 0;
   if (synthesize && gathered.pending.length > 0) {
     const synthResults: Parameters<typeof applySynthesisResults>[1] = [];
     const unresolved: Array<{ block_id: string; reason: string }> = [];
@@ -515,6 +531,10 @@ export async function consolidate(
     for (const [projectSlug, tasks] of importByProject) {
       const fullPageInput = reconstructFullPageImportInput(projectSlug, tasks);
       const r = await runFullPageImportSynthesizer(fullPageInput);
+      synthCostUsd += r.cost_usd ?? 0;
+      synthInTokens += r.in_tokens ?? 0;
+      synthOutTokens += r.out_tokens ?? 0;
+      synthCacheReadTokens += r.cache_read_tokens ?? 0;
       if (r.ok && r.output) {
         const sectionToBlockId = new Map(
           tasks.map((t) => [t.section_kind, t.block_id]),
@@ -548,6 +568,10 @@ export async function consolidate(
     for (const task of liveTasks) {
       const synthInput = reconstructSynthesizeInput(task);
       const r = await runSynthesizer(synthInput, "live");
+      synthCostUsd += r.cost_usd ?? 0;
+      synthInTokens += r.in_tokens ?? 0;
+      synthOutTokens += r.out_tokens ?? 0;
+      synthCacheReadTokens += r.cache_read_tokens ?? 0;
       if (r.ok && r.output) {
         synthResults.push({
           block_id: task.block_id,
@@ -565,7 +589,8 @@ export async function consolidate(
     applyResult = applySynthesisResults(gathered.pending, synthResults, unresolved);
   }
 
-  const summary = `${new Date().toISOString()}  consolidate  scanned=${gathered.scanned}  consolidated=${gathered.applied_deterministically.consolidated + applyResult.consolidated}  routed_to_review=${gathered.applied_deterministically.routed_to_review}  errors=${gathered.applied_deterministically.errors + applyResult.errors}  synthesize=${synthesize}\n`;
+  const costFmt = synthCostUsd.toFixed(6);
+  const summary = `${new Date().toISOString()}  consolidate  scanned=${gathered.scanned}  consolidated=${gathered.applied_deterministically.consolidated + applyResult.consolidated}  routed_to_review=${gathered.applied_deterministically.routed_to_review}  errors=${gathered.applied_deterministically.errors + applyResult.errors}  synthesize=${synthesize}  cost_usd=${costFmt}  in_tokens=${synthInTokens}  out_tokens=${synthOutTokens}  cache_read_tokens=${synthCacheReadTokens}\n`;
   appendFileSync(v.log, summary);
   appendFileSync(resolve(v.logs, `librarian-${today()}.log`), summary);
 
@@ -633,7 +658,7 @@ function reconstructFullPageImportInput(
       kind:
         f.relPath === "_git-log"
           ? "git"
-          : f.relPath === "meta.yaml"
+          : f.relPath === "meta.yaml" || f.relPath === TRUNCATION_NOTE_REL_PATH
             ? "meta"
             : f.relPath === "README.md" || f.relPath.startsWith("drafts/")
               ? "report"

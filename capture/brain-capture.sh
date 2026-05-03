@@ -76,6 +76,10 @@ created=0
 skipped=0
 quarantined=0
 errors=0
+total_cost_usd=0
+total_in_tokens=0
+total_out_tokens=0
+total_cache_read_tokens=0
 
 # Exported for the python heredocs in read_marker / write_marker.
 export MARKERS_FILE
@@ -135,6 +139,40 @@ val = obj.get(field, "")
 if isinstance(val, str):
     print(val)
 PY
+}
+
+# Pull cost + token usage out of a `claude --bare --output-format json`
+# envelope and add them to the run-level totals. Tolerates missing
+# fields (e.g. the smoke-test fake omits cost). Stdin: raw envelope.
+accumulate_cost() {
+  local raw="$1"
+  [[ -z "${raw}" ]] && return 0
+  local parts
+  parts="$(BRAIN_RAW="${raw}" /usr/bin/python3 - <<'PY' 2>/dev/null
+import json, os
+raw = os.environ.get("BRAIN_RAW", "")
+try:
+    d = json.loads(raw)
+except Exception:
+    print("0\t0\t0\t0")
+    raise SystemExit
+if not isinstance(d, dict):
+    print("0\t0\t0\t0")
+    raise SystemExit
+cost = d.get("total_cost_usd") or 0
+usage = d.get("usage") if isinstance(d.get("usage"), dict) else {}
+in_tok = usage.get("input_tokens") or 0
+out_tok = usage.get("output_tokens") or 0
+cache_r = usage.get("cache_read_input_tokens") or 0
+print(f"{cost}\t{in_tok}\t{out_tok}\t{cache_r}")
+PY
+)"
+  [[ -z "${parts}" ]] && return 0
+  IFS=$'\t' read -r cost in_tok out_tok cache_r <<< "${parts}"
+  total_cost_usd="$(/usr/bin/python3 -c "print(f'{${total_cost_usd:-0} + ${cost:-0}:.6f}')")"
+  total_in_tokens=$((total_in_tokens + ${in_tok:-0}))
+  total_out_tokens=$((total_out_tokens + ${out_tok:-0}))
+  total_cache_read_tokens=$((total_cache_read_tokens + ${cache_r:-0}))
 }
 
 # Build a RECENT_CAPTURES_FOR_SESSION preamble for the classifier so
@@ -389,6 +427,7 @@ if [[ -s "${QUEUE_FILE}" ]]; then
       queue_errors=$((queue_errors + 1))
       continue
     fi
+    accumulate_cost "${raw}"
     if ! apply_outcome "${raw}" "${session_id}" "${current_size}" "${trigger}"; then
       echo "${event}" >> "${QUEUE_FILE}"
       queue_errors=$((queue_errors + 1))
@@ -426,7 +465,8 @@ for jsonl in "${CLAUDE_PROJECTS}"/*/*.jsonl; do
     errors=$((errors + 1))
     continue
   fi
+  accumulate_cost "${raw}"
   apply_outcome "${raw}" "${session_id}" "${current_size}" "scheduled" || :
 done
 
-echo "${ts}  trigger=worker  queue_drained=${queue_drained}  queue_errors=${queue_errors}  sessions_scanned=${sessions_scanned}  created=${created}  skipped=${skipped}  quarantined=${quarantined}  errors=${errors}" >> "${log}"
+echo "${ts}  trigger=worker  queue_drained=${queue_drained}  queue_errors=${queue_errors}  sessions_scanned=${sessions_scanned}  created=${created}  skipped=${skipped}  quarantined=${quarantined}  errors=${errors}  cost_usd=${total_cost_usd}  in_tokens=${total_in_tokens}  out_tokens=${total_out_tokens}  cache_read_tokens=${total_cache_read_tokens}" >> "${log}"

@@ -68,6 +68,55 @@ export interface SynthesizeResult {
   raw_stdout?: string;
   raw_stderr?: string;
   model: string;
+  cost_usd?: number;
+  in_tokens?: number;
+  out_tokens?: number;
+  cache_read_tokens?: number;
+}
+
+/**
+ * Pull cost + token usage out of a `claude --bare --output-format json`
+ * envelope. Tolerates missing fields (e.g. test fakes that only emit
+ * the inner result string).
+ */
+export function extractCostFromEnvelope(stdout: string): {
+  cost_usd: number;
+  in_tokens: number;
+  out_tokens: number;
+  cache_read_tokens: number;
+} {
+  const empty = {
+    cost_usd: 0,
+    in_tokens: 0,
+    out_tokens: 0,
+    cache_read_tokens: 0,
+  };
+  const trimmed = stdout.trim();
+  if (!trimmed) return empty;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return empty;
+  }
+  if (typeof parsed !== "object" || parsed === null) return empty;
+  const env = parsed as Record<string, unknown>;
+  const cost =
+    typeof env.total_cost_usd === "number" ? env.total_cost_usd : 0;
+  const usage =
+    typeof env.usage === "object" && env.usage !== null
+      ? (env.usage as Record<string, unknown>)
+      : {};
+  return {
+    cost_usd: cost,
+    in_tokens: typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
+    out_tokens:
+      typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
+    cache_read_tokens:
+      typeof usage.cache_read_input_tokens === "number"
+        ? usage.cache_read_input_tokens
+        : 0,
+  };
 }
 
 /**
@@ -294,6 +343,7 @@ export async function runSynthesizer(
     child.stdin.end(stdin);
   });
   const duration = Date.now() - start;
+  const cost = extractCostFromEnvelope(result.stdout);
 
   const meta = {
     duration_ms: duration,
@@ -302,6 +352,10 @@ export async function runSynthesizer(
     raw_stdout: result.stdout,
     raw_stderr: result.stderr,
     model,
+    cost_usd: cost.cost_usd,
+    in_tokens: cost.in_tokens,
+    out_tokens: cost.out_tokens,
+    cache_read_tokens: cost.cache_read_tokens,
   } as const;
 
   if (result.timedOut)
@@ -363,6 +417,10 @@ export interface FullPageSynthesizeResult {
   raw_stdout?: string;
   raw_stderr?: string;
   model: string;
+  cost_usd?: number;
+  in_tokens?: number;
+  out_tokens?: number;
+  cache_read_tokens?: number;
 }
 
 /**
@@ -441,6 +499,7 @@ export async function runFullPageImportSynthesizer(
     child.stdin.end(prompt);
   });
   const duration = Date.now() - start;
+  const cost = extractCostFromEnvelope(result.stdout);
 
   const meta = {
     duration_ms: duration,
@@ -449,6 +508,10 @@ export async function runFullPageImportSynthesizer(
     raw_stdout: result.stdout,
     raw_stderr: result.stderr,
     model,
+    cost_usd: cost.cost_usd,
+    in_tokens: cost.in_tokens,
+    out_tokens: cost.out_tokens,
+    cache_read_tokens: cost.cache_read_tokens,
   } as const;
 
   if (result.timedOut) return { ok: false, reason: "timeout", ...meta };

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { vaultPaths } from "../lib/vault.js";
 import { loadConfig } from "../lib/config.js";
 import { recentActiveSessions, type ActiveSessionSummary } from "../lib/sessions.js";
+import { brainCost } from "./cost.js";
 
 export const statusSchema = {
   _placeholder: z.literal("").optional(),
@@ -28,6 +29,33 @@ export interface StatusResult {
   };
   active_sessions_24h: ActiveSessionSummary[];
   enforcement: Record<string, boolean>;
+  usage: {
+    today_usd: number;
+    last_7d_usd: number;
+    last_30d_usd: number;
+    last_30d_capture_runs: number;
+    last_30d_synthesis_runs: number;
+  };
+}
+
+function shiftDate(iso: string, days: number): string {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function summarizeUsage(): StatusResult["usage"] {
+  const today = new Date().toISOString().slice(0, 10);
+  const todayCost = brainCost({ since: today, until: today });
+  const last7 = brainCost({ since: shiftDate(today, -6), until: today });
+  const last30 = brainCost({ since: shiftDate(today, -29), until: today });
+  return {
+    today_usd: todayCost.total_cost_usd,
+    last_7d_usd: last7.total_cost_usd,
+    last_30d_usd: last30.total_cost_usd,
+    last_30d_capture_runs: last30.capture.runs,
+    last_30d_synthesis_runs: last30.synthesis.runs,
+  };
 }
 
 function countDir(path: string): number {
@@ -90,5 +118,6 @@ export function brainStatus(_input: {
     },
     active_sessions_24h: recentActiveSessions(),
     enforcement: cfg.enforcement as unknown as Record<string, boolean>,
+    usage: summarizeUsage(),
   };
 }

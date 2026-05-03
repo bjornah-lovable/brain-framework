@@ -67,8 +67,8 @@ const DEFAULTS: BrainConfig = {
     delta_classifier_max_budget_usd: 0.3,
     delta_classifier_max_input_bytes: 524288,
     import_model: "claude-opus-4-7",
-    import_max_budget_usd: 20.0,
-    import_max_input_bytes: 0,
+    import_max_budget_usd: 10.0,
+    import_max_input_bytes: 1_048_576,
   },
   mcp: {
     server_name: "brain-server",

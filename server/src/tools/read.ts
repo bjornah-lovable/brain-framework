@@ -5,6 +5,7 @@ import { extractBlock } from "../lib/blockId.js";
 import { logRead } from "../lib/log.js";
 import { loadConfig } from "../lib/config.js";
 import { resolveSessionId, isInternal } from "../lib/session.js";
+import { brainReadProvenance } from "./read-provenance.js";
 
 export const readSchema = {
   path: z
@@ -18,6 +19,12 @@ export const readSchema = {
     .describe(
       "Optional block ID to extract a single section. Format: <plane>.<slug>.<section>.v<int>.",
     ),
+  mode: z
+    .enum(["content", "provenance"])
+    .optional()
+    .describe(
+      "'content' (default) returns the page (or block) text. 'provenance' returns the sidecar JSON recording which captures fed which blocks. Provenance ignores `block`.",
+    ),
 };
 
 export interface ReadResult {
@@ -26,13 +33,28 @@ export interface ReadResult {
   content?: string;
   size_bytes?: number;
   block?: string;
+  mode?: "content" | "provenance";
+  provenance?: unknown;
   error?: { code: string; message: string };
 }
 
 export function brainRead(input: {
   path: string;
   block?: string;
+  mode?: "content" | "provenance";
 }): ReadResult {
+  if (input.mode === "provenance") {
+    const r = brainReadProvenance({ page: input.path });
+    const out: ReadResult = {
+      path: r.page,
+      exists: r.found,
+      mode: "provenance",
+    };
+    if (r.found) out.provenance = r.provenance;
+    if (r.error) out.error = r.error;
+    return out;
+  }
+
   let resolved: string;
   try {
     resolved = resolveContentPath(input.path);

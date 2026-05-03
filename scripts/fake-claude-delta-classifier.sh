@@ -39,9 +39,32 @@ BODY=$(cat <<EOF
 EOF
 )
 
+# Optional cost stub — when BRAIN_FAKE_COST_USD / BRAIN_FAKE_IN_TOKENS /
+# BRAIN_FAKE_OUT_TOKENS are set, embed them in the envelope so the
+# capture worker's accumulate_cost helper sees realistic numbers.
+COST_STUB=""
+COST_USD="${BRAIN_FAKE_COST_USD:-}"
+IN_TOK="${BRAIN_FAKE_IN_TOKENS:-}"
+OUT_TOK="${BRAIN_FAKE_OUT_TOKENS:-}"
+if [[ -n "${COST_USD}" || -n "${IN_TOK}" || -n "${OUT_TOK}" ]]; then
+  COST_STUB=$(BRAIN_COST="${COST_USD:-0}" BRAIN_IN="${IN_TOK:-0}" BRAIN_OUT="${OUT_TOK:-0}" /usr/bin/python3 - <<'PY'
+import json, os
+print(json.dumps({
+  "total_cost_usd": float(os.environ["BRAIN_COST"]),
+  "usage": {
+    "input_tokens": int(os.environ["BRAIN_IN"]),
+    "output_tokens": int(os.environ["BRAIN_OUT"]),
+    "cache_read_input_tokens": 0,
+  },
+}))[1:-1]
+PY
+)
+  COST_STUB=",${COST_STUB}"
+fi
+
 if [[ "${OUTCOME}" == "NO_RELEVANT_INFORMATION" || "${OUTCOME}" == "ALREADY_CAPTURED" ]]; then
   cat <<EOF
-{"type":"result","subtype":"success","is_error":false,"result":"{\"outcome\":\"${OUTCOME}\",\"reason\":\"fake classifier — no body needed\"}"}
+{"type":"result","subtype":"success","is_error":false,"result":"{\"outcome\":\"${OUTCOME}\",\"reason\":\"fake classifier — no body needed\"}"${COST_STUB}}
 EOF
   exit 0
 fi
@@ -64,14 +87,27 @@ print(json.dumps({
 PY
 )
 
-ENVELOPE=$(BRAIN_INNER="${INNER}" /usr/bin/python3 - <<'PY'
+ENVELOPE=$(BRAIN_INNER="${INNER}" \
+  BRAIN_COST="${COST_USD:-0}" \
+  BRAIN_IN="${IN_TOK:-0}" \
+  BRAIN_OUT="${OUT_TOK:-0}" \
+  BRAIN_HAS_COST="${COST_STUB:+1}" \
+  /usr/bin/python3 - <<'PY'
 import json, os
-print(json.dumps({
+env = {
   "type": "result",
   "subtype": "success",
   "is_error": False,
   "result": os.environ["BRAIN_INNER"],
-}))
+}
+if os.environ.get("BRAIN_HAS_COST"):
+    env["total_cost_usd"] = float(os.environ["BRAIN_COST"])
+    env["usage"] = {
+        "input_tokens": int(os.environ["BRAIN_IN"]),
+        "output_tokens": int(os.environ["BRAIN_OUT"]),
+        "cache_read_input_tokens": 0,
+    }
+print(json.dumps(env))
 PY
 )
 printf '%s\n' "${ENVELOPE}"

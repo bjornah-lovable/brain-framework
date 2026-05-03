@@ -12,6 +12,7 @@ import {
   prepareImport,
   readImportSources,
   resolveBrainSlugForImport,
+  TRUNCATION_NOTE_REL_PATH,
   type ImportStatus,
 } from "../librarian/import.js";
 import {
@@ -323,7 +324,7 @@ function buildFullPageInput(
       kind:
         f.relPath === "_git-log"
           ? "git"
-          : f.relPath === "meta.yaml"
+          : f.relPath === "meta.yaml" || f.relPath === TRUNCATION_NOTE_REL_PATH
             ? "meta"
             : f.relPath === "README.md" || f.relPath.startsWith("drafts/")
               ? "report"

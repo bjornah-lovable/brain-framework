@@ -133,10 +133,32 @@ export function appendToProjectPage(
 
   const date = item.created_at.slice(0, 10);
   const summaryLines = extractSummaryBullets(item.body, item.capture_kind);
-  const datedBullet =
+  const candidateBullets =
     summaryLines.length === 0
-      ? `- _(${date}, ${shortName(item.capture_path)}: no extractable bullets)_`
-      : summaryLines.map((l) => `- ${date} — ${l}`).join("\n");
+      ? [`- _(${date}, ${shortName(item.capture_path)}: no extractable bullets)_`]
+      : summaryLines.map((l) => `- ${date} — ${l}`);
+
+  // De-dup: drop any bullet whose exact line already appears in the
+  // existing block body. The deterministic-fallback path runs without
+  // LLM compression, so identical content captured multiple times in
+  // one day (e.g. repeated smoke runs) would otherwise pile up.
+  // Different-day same-content passes through — recurrences should
+  // remain visible in the timeline.
+  const existingBlock = readBlockBody(body, blockId) ?? "";
+  const existingLines = new Set(
+    existingBlock
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("- ")),
+  );
+  const newBullets = candidateBullets.filter((b) => !existingLines.has(b));
+  if (newBullets.length === 0) {
+    // All candidates were duplicates — leave the page (and its
+    // last_touched) untouched. The capture is still moved to processed/
+    // by the caller.
+    return { block_id: blockId, path };
+  }
+  const datedBullet = newBullets.join("\n");
 
   body = insertAfterMarker(
     body,

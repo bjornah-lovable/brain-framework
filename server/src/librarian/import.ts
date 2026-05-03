@@ -10,6 +10,14 @@ import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { assertSourceProjectsAllowed } from "../lib/safety.js";
+import { loadConfig } from "../lib/config.js";
+
+/**
+ * Synthetic source rel_path for the truncation note appended when the
+ * input cap kicks in. Both consumers special-case this in their
+ * `kind:` switch so the model sees it as `meta`.
+ */
+export const TRUNCATION_NOTE_REL_PATH = "_truncation-note";
 
 export interface DiscoveredProject {
   /** Folder name on disk: `<slug>-YYYY-MM-DD` or legacy bare slug. */
@@ -144,11 +152,24 @@ export function brainSlugFor(
  */
 export function readImportSources(
   folderPath: string,
-  options: { status?: ImportStatus; includeGitLog?: boolean } = {},
+  options: {
+    status?: ImportStatus;
+    includeGitLog?: boolean;
+    /**
+     * Maximum bytes (UTF-8) summed over all source bodies. Defaults to
+     * `librarian.import_max_input_bytes` from .brain/config.yaml. Pass
+     * 0 to disable. When exceeded, oldest non-anchor sources are
+     * dropped first; a synthetic `_truncation-note` source is prepended
+     * so the model is told what was truncated.
+     */
+    maxInputBytes?: number;
+  } = {},
 ): ImportSources {
   const status = options.status ?? "active";
   const tier = SOURCE_TIERS[status];
   const includeGitLog = options.includeGitLog !== false;
+  const maxInputBytes =
+    options.maxInputBytes ?? loadConfig().librarian.import_max_input_bytes;
 
   const files: ImportSources["files"] = [];
 
@@ -193,10 +214,85 @@ export function readImportSources(
     }
   }
 
+  // Apply the input cap (oldest-first drops, README+meta preserved).
+  // The cap shapes both the LLM payload and the sha — same content
+  // truncated under different caps gets different shas, which forces
+  // a fresh synthesis run when the cap changes.
+  const capped = applyInputCap(files, maxInputBytes);
+
   // Normalise: trim trailing whitespace per file; concatenate with
   // a stable separator including the relPath so renames change sha.
-  const parts = files.map((f) => `\n--- ${f.relPath} ---\n${f.body.replace(/\s+$/g, "")}\n`);
-  return { files, normalised: parts.join("") };
+  const parts = capped.map((f) => `\n--- ${f.relPath} ---\n${f.body.replace(/\s+$/g, "")}\n`);
+  return { files: capped, normalised: parts.join("") };
+}
+
+/**
+ * Drop oldest non-anchor sources until the total UTF-8 byte size is at
+ * or under `maxBytes`. README.md and meta.yaml are anchors and are
+ * preserved as long as possible; notes/ go first (oldest mtime first),
+ * then drafts/, then synthetic _git-log. On any drop we prepend a
+ * synthetic `_truncation-note` source so the synthesizer is explicitly
+ * told what's missing and works from the most-recent material remaining.
+ *
+ * `maxBytes <= 0` disables the cap and returns inputs unchanged.
+ */
+export function applyInputCap(
+  files: ImportSources["files"],
+  maxBytes: number,
+): ImportSources["files"] {
+  if (maxBytes <= 0) return files;
+
+  const byteLen = (s: string) => Buffer.byteLength(s, "utf8");
+  let totalBytes = files.reduce((sum, f) => sum + byteLen(f.body), 0);
+  if (totalBytes <= maxBytes) return files;
+
+  const isAnchor = (rel: string) => rel === "README.md" || rel === "meta.yaml";
+
+  // Build the ordered drop queue: synthetic git-log first (least
+  // signal-dense for a fixed byte cost), then notes oldest-first, then
+  // drafts oldest-first. Anchors are never queued.
+  const droppable = files
+    .filter((f) => !isAnchor(f.relPath))
+    .map((f) => ({ ...f }));
+  droppable.sort((a, b) => {
+    const tier = (rel: string) =>
+      rel === "_git-log" ? 0 : rel.startsWith("notes/") ? 1 : rel.startsWith("drafts/") ? 2 : 3;
+    const tA = tier(a.relPath);
+    const tB = tier(b.relPath);
+    if (tA !== tB) return tA - tB;
+    return a.mtime.localeCompare(b.mtime); // older first
+  });
+
+  const drop = new Set<string>();
+  let droppedBytes = 0;
+  let droppedCount = 0;
+  for (const f of droppable) {
+    if (totalBytes <= maxBytes) break;
+    const b = byteLen(f.body);
+    drop.add(f.relPath);
+    totalBytes -= b;
+    droppedBytes += b;
+    droppedCount += 1;
+  }
+
+  const kept = files.filter((f) => !drop.has(f.relPath));
+
+  if (droppedCount === 0) return kept;
+
+  const noteBody =
+    `[INPUT TRUNCATED]\n` +
+    `Project source content exceeded the import cap of ${maxBytes} bytes. ` +
+    `Dropped ${droppedCount} oldest source files (${droppedBytes} bytes total). ` +
+    `Synthesise the four blocks from the most-recent material remaining; ` +
+    `older context is intentionally not visible to this call.`;
+
+  const note: ImportSources["files"][number] = {
+    relPath: TRUNCATION_NOTE_REL_PATH,
+    absPath: `<truncation-note>`,
+    body: noteBody,
+    mtime: new Date().toISOString(),
+  };
+  return [note, ...kept];
 }
 
 function appendDirSorted(
