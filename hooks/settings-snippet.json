@@ -1,0 +1,49 @@
+{
+  "_comment_top": "Brain hook + MCP additions to merge into ~/.claude/settings.json. The arrays MUST be merged additively — preserve any existing entries (Corridor, kjell, tmux, etc.). DO NOT replace whole arrays.",
+
+  "mcpServers": {
+    "brain": {
+      "command": "node",
+      "args": ["/Users/bjornah/brain/code/server/dist/index.js"],
+      "env": {
+        "BRAIN_VAULT_ROOT": "/Users/bjornah/brain"
+      }
+    }
+  },
+
+  "_comment_hooks": "PreToolUse: sacred-paths guard. PreCompact + SessionEnd: enqueue.sh records a durable event in ~/brain/.brain/state/capture-queue.jsonl; the brain-capture worker (launchd or manual) drains it and dispatches the headless delta classifier. enqueue.sh is fast and cannot block the hook — durability of the trigger is what matters; processing is async.",
+
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/bjornah/brain/code/hooks/sacred-paths-guard.sh"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/bjornah/brain/code/capture/enqueue.sh pre_compact"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/bjornah/brain/code/capture/enqueue.sh session_end"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SearchDossier",
+  "description": "Output contract for the brain-search investigator subagent. Enforced by `claude --json-schema`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["confidence", "sources", "suggested_reads", "open_questions"],
+  "properties": {
+    "query_interpretation": {
+      "type": "string",
+      "description": "One sentence in your own words restating the question."
+    },
+    "answer": {
+      "type": ["string", "null"],
+      "description": "Compact answer text. Null if the candidates do not let you answer."
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"]
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "source_type", "last_updated", "snippet", "why_relevant"],
+        "properties": {
+          "path": { "type": "string" },
+          "block_id": { "type": "string" },
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "synthesized_page",
+              "capture",
+              "trajectory",
+              "raw",
+              "evidence"
+            ]
+          },
+          "last_updated": { "type": "string" },
+          "snippet": {
+            "type": "string",
+            "description": "<= 30 words."
+          },
+          "why_relevant": {
+            "type": "string",
+            "description": "One sentence."
+          },
+          "provenance_available": { "type": "boolean" }
+        }
+      }
+    },
+    "suggested_reads": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

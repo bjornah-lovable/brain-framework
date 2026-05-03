@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BrainCaptureDelta",
+  "description": "Output contract for the headless brain-capture-delta classifier. Exactly one of the outcomes from PLAN_v3 §2.5 empty-capture lifecycle. Body fields are required only on CAPTURE_CREATED.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome"],
+  "properties": {
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "NO_RELEVANT_INFORMATION",
+        "ALREADY_CAPTURED",
+        "CAPTURE_CREATED",
+        "QUARANTINED"
+      ],
+      "description": "The classifier's verdict. (NO_NEW_ACTIVITY is decided pre-classifier by brain-capture.sh based on byte-marker comparison; ERROR is decided post-classifier on parse/spawn failures.)"
+    },
+    "reason": {
+      "type": "string",
+      "description": "One short sentence explaining the outcome. Useful for log lines and quarantine review."
+    },
+    "body": {
+      "type": "string",
+      "description": "The capture body in markdown. REQUIRED if outcome=CAPTURE_CREATED. Use sections '## Decisions', '## Findings', '## Blockers / Open questions', '## State changes', '## Notes' as appropriate. Summarise tightly; do not paste raw secrets or auth headers."
+    },
+    "project_slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9_][a-z0-9_-]*$",
+      "description": "Lowercase project slug for routing. REQUIRED if outcome=CAPTURE_CREATED. Pass '_unrouted' if you cannot determine the project from the transcript."
+    },
+    "capture_kind": {
+      "type": "string",
+      "enum": ["decision", "finding", "blocker", "state_change", "open_question"],
+      "description": "Optional. The dominant kind of content in the body."
+    },
+    "importance": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    }
+  }
+}

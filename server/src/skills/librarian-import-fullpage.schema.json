@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LibrarianImportFullPage",
+  "description": "Output contract for the full-page import synthesizer. Produces all four section blocks of a project page in one response. Each block has the same shape as a single LibrarianSynthesis output.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["where_we_are", "blockers", "recent_updates", "artifacts"],
+  "properties": {
+    "where_we_are": { "$ref": "#/$defs/Block" },
+    "blockers": { "$ref": "#/$defs/Block" },
+    "recent_updates": { "$ref": "#/$defs/Block" },
+    "artifacts": { "$ref": "#/$defs/Block" }
+  },
+  "$defs": {
+    "Block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["new_block_body", "summary", "aliases", "entities", "search_terms"],
+      "properties": {
+        "new_block_body": {
+          "type": "string",
+          "description": "Full markdown for this section block. Must include the heading line and the <!-- brain:block ... --> comment exactly as in the input's current_block_bodies for this section."
+        },
+        "summary": { "type": "string" },
+        "aliases": { "type": "array", "maxItems": 10, "items": { "type": "string" } },
+        "entities": { "type": "array", "maxItems": 15, "items": { "type": "string" } },
+        "search_terms": { "type": "array", "maxItems": 10, "items": { "type": "string" } }
+      }
+    }
+  }
+}

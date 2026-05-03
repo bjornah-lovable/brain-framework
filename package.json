@@ -1,0 +1,38 @@
+{
+  "name": "brain",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal agent-memory substrate (PLAN_v2.md, Tier 1).",
+  "type": "module",
+  "engines": {
+    "node": ">=20.10.0"
+  },
+  "scripts": {
+    "build": "tsc -b && pnpm copy-assets",
+    "copy-assets": "mkdir -p server/dist/skills && cp -R server/src/skills/. server/dist/skills/",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint server/src",
+    "brain-server": "node server/dist/index.js"
+  },
+  "bin": {
+    "brain-server": "server/dist/index.js",
+    "brain-librarian": "server/dist/librarian/cli.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "better-sqlite3": "^11.6.0",
+    "gray-matter": "^4.0.3",
+    "ulid": "^2.3.0",
+    "yaml": "^2.6.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.2",
+    "oxlint": "^0.15.0",
+    "typescript": "^5.7.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["better-sqlite3"]
+  }
+}

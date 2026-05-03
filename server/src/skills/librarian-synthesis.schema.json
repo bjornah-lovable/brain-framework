@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LibrarianSynthesis",
+  "description": "Output contract for the brain-librarian-synthesis subagent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "new_block_body",
+    "summary",
+    "aliases",
+    "entities",
+    "search_terms"
+  ],
+  "properties": {
+    "new_block_body": {
+      "type": "string",
+      "description": "Full markdown for the rewritten block. Must include the original heading line and the <!-- brain:block ... --> comment. May be the current body verbatim if no change is warranted."
+    },
+    "summary": {
+      "type": "string",
+      "description": "1-2 sentences describing what this block is about. Used for retrieval routing."
+    },
+    "aliases": {
+      "type": "array",
+      "maxItems": 10,
+      "items": { "type": "string" }
+    },
+    "entities": {
+      "type": "array",
+      "maxItems": 15,
+      "items": { "type": "string" }
+    },
+    "search_terms": {
+      "type": "array",
+      "maxItems": 10,
+      "items": { "type": "string" }
+    },
+    "no_op": {
+      "type": "boolean",
+      "description": "True if the captures did not warrant any change. The librarian still records that synthesis ran."
+    }
+  }
+}
