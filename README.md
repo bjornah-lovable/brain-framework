@@ -1,5 +1,12 @@
 # brain — runtime code
 
+> **Editing this code? Read [`AGENTS.md`](AGENTS.md) first.** It lists
+> the four required design docs, the install conventions you must not
+> bypass (source-of-truth plists / hooks / settings under `scripts/`,
+> never hand-edited under `~/Library/LaunchAgents/`), and the cadence
+> intent baked into `SCHEMA.md`. This applies to **anyone** touching
+> the code, including reviewers — not just first-time contributors.
+
 Implementation of a personal agent-memory substrate: a markdown-first
 vault as source of truth, a single-writer librarian, an MCP server as
 the agent interface, sidecar provenance on stable block IDs, and a

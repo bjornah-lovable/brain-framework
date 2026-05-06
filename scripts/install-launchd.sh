@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+#
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  STOP — read ~/brain/code/AGENTS.md before editing this script.  ║
+# ║  Plists live at scripts/<label>.plist. Add new plists there,     ║
+# ║  list them in install_one() below, run this. Never hand-write    ║
+# ║  to ~/Library/LaunchAgents/ — re-running this script overwrites  ║
+# ║  hand-edits and other machines never see them.                   ║
+# ╚══════════════════════════════════════════════════════════════════╝
+#
 # Install (or refresh) the launchd jobs for the brain auto-loop.
 # Idempotent — safe to run repeatedly.
 #

@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+#
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  STOP — read ~/brain/code/AGENTS.md before editing this script.  ║
+# ║  Hooks + MCP server registration are managed here. Don't         ║
+# ║  hand-edit ~/.claude/settings.json directly for brain entries —  ║
+# ║  add the change here and re-run, so other machines pick it up.   ║
+# ╚══════════════════════════════════════════════════════════════════╝
+#
 # Merge brain entries into ~/.claude/settings.json without replacing
 # existing hook entries (Corridor, kjell, tmux, etc.).
 #

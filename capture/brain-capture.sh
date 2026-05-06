@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+#
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  STOP — read ~/brain/code/AGENTS.md before editing this file.    ║
+# ║  Required docs: README.md, SCHEMA.md, PLAN_v3.md.                ║
+# ║  Schedule + env live in scripts/dev.bjorn.brain.capture.plist —  ║
+# ║  edit there, then re-run scripts/install-launchd.sh. Never       ║
+# ║  hand-edit ~/Library/LaunchAgents/ directly.                     ║
+# ╚══════════════════════════════════════════════════════════════════╝
+#
 # brain — capture worker (PLAN_v3 §3 Tier 1.5a/b/c).
 #
 # Runs from launchd twice a day (12:00, 17:00 Stockholm) and on demand.
