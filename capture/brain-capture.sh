@@ -69,6 +69,26 @@ if [[ -e "${PAUSED_FILE}" ]]; then
   exit 0
 fi
 
+# Worker-level lock: prevent concurrent capture-worker runs from
+# double-processing the same session deltas. macOS doesn't ship flock,
+# so use mkdir as the atomic primitive.
+LOCK_DIR="${STATE_DIR}/capture-worker.lock"
+if ! /bin/mkdir "${LOCK_DIR}" 2>/dev/null; then
+  holder_pid=""
+  if [[ -f "${LOCK_DIR}/pid" ]]; then
+    holder_pid="$(/bin/cat "${LOCK_DIR}/pid" 2>/dev/null)"
+  fi
+  if [[ -n "${holder_pid}" ]] && /bin/ps -p "${holder_pid}" >/dev/null 2>&1; then
+    echo "${ts}  trigger=worker  skipped=concurrent_run  holder_pid=${holder_pid}" >> "${log}"
+    exit 0
+  fi
+  # Stale lock (holder no longer alive). Reclaim.
+  /bin/rm -rf "${LOCK_DIR}"
+  /bin/mkdir "${LOCK_DIR}"
+fi
+echo "$$" > "${LOCK_DIR}/pid"
+trap '/bin/rm -rf "${LOCK_DIR}"' EXIT INT TERM
+
 queue_drained=0
 queue_errors=0
 sessions_scanned=0
@@ -241,6 +261,15 @@ run_classifier() {
   local trigger="$3"
   local ctx="$4"
   local session_id="$5"
+  # file_size is passed in by the caller (which also stats it for the
+  # marker write) so the bytes the classifier sees and the bytes the
+  # marker advances past are the same span — no race against an
+  # actively-being-written transcript. Falls back to a fresh stat if
+  # not provided (compat with older callers).
+  local file_size="${6:-}"
+  if [[ -z "${file_size}" ]]; then
+    file_size=$(/usr/bin/stat -f%z "${jsonl}" 2>/dev/null || /usr/bin/stat -c%s "${jsonl}" 2>/dev/null || echo 0)
+  fi
 
   local settings_args=()
   if [[ -f "${SETTINGS_BARE}" ]]; then
@@ -258,8 +287,7 @@ run_classifier() {
 
   # Compute delta size and apply optional truncation. Cap of 0 means
   # unbounded (used by one-time cold-start runs over big sessions).
-  local file_size delta_size start_offset truncation_note=""
-  file_size=$(/usr/bin/stat -f%z "${jsonl}" 2>/dev/null || /usr/bin/stat -c%s "${jsonl}" 2>/dev/null || echo 0)
+  local delta_size start_offset truncation_note=""
   delta_size=$((file_size - marker))
   start_offset=$((marker + 1))
   if [[ "${DELTA_MAX_INPUT_BYTES}" -gt 0 && "${delta_size}" -gt "${DELTA_MAX_INPUT_BYTES}" ]]; then
@@ -282,7 +310,12 @@ run_classifier() {
     recent_captures_preamble "${session_id}"
     echo
     echo "TRANSCRIPT_DELTA:"
-    /usr/bin/tail -c "+${start_offset}" "${jsonl}"
+    # Bound output to delta_size bytes. If the file grows between
+    # the caller's stat and tail-execution, those extra bytes don't
+    # leak into the classifier — the next run picks them up.
+    if [[ "${delta_size}" -gt 0 ]]; then
+      /usr/bin/tail -c "+${start_offset}" "${jsonl}" | /usr/bin/head -c "${delta_size}"
+    fi
   } | BRAIN_INTERNAL=1 "${CLAUDE_BIN}" \
       --bare \
       -p \
@@ -386,6 +419,20 @@ PY
   esac
 }
 
+# Track session_ids attempted in phase 1 so phase 2 won't re-classify
+# them in the same run. Bash arrays as a poor-man's set; lookup is
+# O(N) but N is small (~queue size, typically <50).
+declare -a phase1_attempted=()
+
+phase1_already_attempted() {
+  local needle="$1"
+  local s
+  for s in "${phase1_attempted[@]}"; do
+    [[ "${s}" == "${needle}" ]] && return 0
+  done
+  return 1
+}
+
 # ---- phase 1: drain queue -------------------------------------------
 
 if [[ -s "${QUEUE_FILE}" ]]; then
@@ -421,11 +468,18 @@ if [[ -s "${QUEUE_FILE}" ]]; then
     if [[ "${current_size}" -le "${marker}" ]]; then
       # Nothing new since last classification — count as skip.
       skipped=$((skipped + 1))
+      # Mark attempted so phase 2 doesn't re-stat-and-skip the same
+      # session (cheap, but avoids a second-trip log line).
+      phase1_attempted+=("${session_id}")
       continue
     fi
 
+    # Mark BEFORE the classifier call. Even on error/requeue we don't
+    # want phase 2 to re-pay for the same delta in the same run.
+    phase1_attempted+=("${session_id}")
+
     ctx="$(BRAIN_CTX="${event}" /usr/bin/python3 -c "import json,os; print(json.dumps(json.loads(os.environ['BRAIN_CTX'])))")"
-    raw="$(run_classifier "${transcript_path}" "${marker}" "${trigger}" "${ctx}" "${session_id}")" || raw=""
+    raw="$(run_classifier "${transcript_path}" "${marker}" "${trigger}" "${ctx}" "${session_id}" "${current_size}")" || raw=""
     if [[ -z "${raw}" ]]; then
       # Spawn / classifier failure — re-enqueue for next run.
       echo "${event}" >> "${QUEUE_FILE}"
@@ -452,6 +506,14 @@ for jsonl in "${CLAUDE_PROJECTS}"/*/*.jsonl; do
     errors=$((errors + 1))
     continue
   fi
+
+  # Phase-1 already touched this session in this run (drained or
+  # error'd). Skip — re-classifying here either re-pays the same LLM
+  # cost or re-races the marker.
+  if phase1_already_attempted "${session_id}"; then
+    continue
+  fi
+
   current_size=$(/usr/bin/stat -f%z "${jsonl}" 2>/dev/null || /usr/bin/stat -c%s "${jsonl}" 2>/dev/null || echo 0)
   marker="$(read_marker "${session_id}")"
 
@@ -465,7 +527,7 @@ for jsonl in "${CLAUDE_PROJECTS}"/*/*.jsonl; do
     continue
   fi
 
-  raw="$(run_classifier "${jsonl}" "${marker}" "scheduled" '{"trigger":"scheduled"}' "${session_id}")" || raw=""
+  raw="$(run_classifier "${jsonl}" "${marker}" "scheduled" '{"trigger":"scheduled"}' "${session_id}" "${current_size}")" || raw=""
   if [[ -z "${raw}" ]]; then
     errors=$((errors + 1))
     continue

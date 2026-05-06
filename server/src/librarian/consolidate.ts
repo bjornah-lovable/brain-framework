@@ -594,13 +594,15 @@ export async function consolidate(
   appendFileSync(v.log, summary);
   appendFileSync(resolve(v.logs, `librarian-${today()}.log`), summary);
 
-  // Regenerate index.md after every consolidate. The deterministic
-  // path (synthesize=false) writes pages without going through
-  // applySynthesisResults, so the index regen there wouldn't fire.
-  try {
-    regenerateIndex();
-  } catch {
-    // Non-fatal.
+  // Regenerate index.md only when applySynthesisResults didn't (i.e.
+  // when synthesize=false or no pending tasks). The synthesize path
+  // already calls regenerateIndex inside applySynthesisResults.
+  if (!synthesize || gathered.pending.length === 0) {
+    try {
+      regenerateIndex();
+    } catch {
+      // Non-fatal.
+    }
   }
 
   return {

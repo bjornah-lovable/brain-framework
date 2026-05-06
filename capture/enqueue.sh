@@ -57,7 +57,45 @@ print(json.dumps(event))
 PY
 )"
 
-# Atomic append: locked_file_append in bash terms is just `>>`. JSONL
-# is line-atomic so concurrent enqueues from parallel hooks don't tear.
-echo "${event}" >> "${QUEUE_FILE}"
+# Dedup before append: a single CC session can fire SessionEnd /
+# PreCompact multiple times during one work block, and the worker pays
+# 4 python subprocesses per duplicate event before bailing on the
+# marker check. Drop earlier events for the same (session_id,
+# transcript_path) and keep this one as the latest.
+BRAIN_NEW_EVENT="${event}" BRAIN_QUEUE="${QUEUE_FILE}" /usr/bin/python3 - <<'PY'
+import json, os, tempfile
+queue_path = os.environ["BRAIN_QUEUE"]
+new = json.loads(os.environ["BRAIN_NEW_EVENT"])
+key_fields = ("session_id", "transcript_path")
+new_key = tuple(new.get(k, "") for k in key_fields)
+
+kept = []
+try:
+    with open(queue_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except Exception:
+                kept.append(line)
+                continue
+            if tuple(e.get(k, "") for k in key_fields) == new_key:
+                continue  # superseded by new event
+            kept.append(line)
+except FileNotFoundError:
+    pass
+
+kept.append(json.dumps(new))
+
+# Atomic write via tmp + rename so concurrent hooks don't lose lines.
+fd, tmp_path = tempfile.mkstemp(
+    dir=os.path.dirname(queue_path), prefix=".queue.", suffix=".tmp"
+)
+with os.fdopen(fd, "w") as f:
+    f.write("\n".join(kept) + "\n")
+os.rename(tmp_path, queue_path)
+PY
+
 exit 0
