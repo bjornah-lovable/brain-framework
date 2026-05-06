@@ -293,7 +293,12 @@ run_classifier() {
       --max-budget-usd "${DELTA_MAX_BUDGET_USD}" \
       --output-format json \
       "${schema_args[@]+"${schema_args[@]}"}" \
-      "${settings_args[@]+"${settings_args[@]}"}" 2>/dev/null
+      "${settings_args[@]+"${settings_args[@]}"}" 2> >(/usr/bin/tee -a "${LOG_DIR}/spawn-errors-$(date +%Y-%m-%d).log" >&2)
+  local rc=$?
+  # rc !=0 here is informational — the parent already treats empty
+  # stdout as a spawn failure. We just want a breadcrumb in the log
+  # when stderr was non-empty (e.g. "command not found", auth fail).
+  return ${rc}
 }
 
 # Apply a classifier outcome to one session: write the capture if any,
