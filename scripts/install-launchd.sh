@@ -1,24 +1,41 @@
 #!/usr/bin/env bash
-# Install (or refresh) the launchd job for scheduled brain captures.
+# Install (or refresh) the launchd jobs for the brain auto-loop.
 # Idempotent — safe to run repeatedly.
+#
+# Two jobs:
+#   dev.bjorn.brain.capture     — twice-daily (12:00 + 17:00) classifier
+#                                 worker that scans CC session JSONLs and
+#                                 writes captures to ~/brain/captures/.
+#   dev.bjorn.brain.synthesize  — daily (18:00) `consolidate --synthesize`
+#                                 that absorbs captures into project pages
+#                                 with Opus-rewritten block prose.
 
 set -euo pipefail
 
-PLIST_SRC="$(cd "$(dirname "$0")" && pwd)/dev.bjorn.brain.capture.plist"
-PLIST_DEST="${HOME}/Library/LaunchAgents/dev.bjorn.brain.capture.plist"
+SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
+DEST_DIR="${HOME}/Library/LaunchAgents"
+mkdir -p "${DEST_DIR}"
 
-if [[ ! -f "${PLIST_SRC}" ]]; then
-  echo "missing: ${PLIST_SRC}" >&2
-  exit 1
-fi
+install_one() {
+  local label="$1"
+  local src="${SRC_DIR}/${label}.plist"
+  local dest="${DEST_DIR}/${label}.plist"
 
-mkdir -p "${HOME}/Library/LaunchAgents"
+  if [[ ! -f "${src}" ]]; then
+    echo "missing: ${src}" >&2
+    return 1
+  fi
 
-# Unload first if already loaded; ignore failure.
-/bin/launchctl unload "${PLIST_DEST}" 2>/dev/null || true
+  /bin/launchctl unload "${dest}" 2>/dev/null || true
+  cp "${src}" "${dest}"
+  /bin/launchctl load "${dest}"
+  echo "installed: ${dest}"
+}
 
-cp "${PLIST_SRC}" "${PLIST_DEST}"
-/bin/launchctl load "${PLIST_DEST}"
+install_one "dev.bjorn.brain.capture"
+install_one "dev.bjorn.brain.synthesize"
 
-echo "installed: ${PLIST_DEST}"
-echo "next runs: 12:00 and 17:00 local"
+echo
+echo "schedule:"
+echo "  capture worker     12:00 + 17:00 local (delta classifier per session)"
+echo "  synthesize         18:00 local daily   (Opus rewrite of affected blocks)"

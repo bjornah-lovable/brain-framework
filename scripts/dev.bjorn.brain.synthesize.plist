@@ -3,11 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>dev.bjorn.brain.capture</string>
+    <string>dev.bjorn.brain.synthesize</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/bjornah/brain/code/capture/brain-capture.sh</string>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>/opt/homebrew/bin/node /Users/bjornah/brain/code/server/dist/librarian/cli.js consolidate --synthesize &gt;&gt; /Users/bjornah/brain/.brain/log/launchd-synthesize.out 2&gt;&gt; /Users/bjornah/brain/.brain/log/launchd-synthesize.err</string>
     </array>
 
     <key>EnvironmentVariables</key>
@@ -21,26 +23,18 @@
     </dict>
 
     <key>StartCalendarInterval</key>
-    <array>
-        <dict>
-            <key>Hour</key>
-            <integer>12</integer>
-            <key>Minute</key>
-            <integer>0</integer>
-        </dict>
-        <dict>
-            <key>Hour</key>
-            <integer>17</integer>
-            <key>Minute</key>
-            <integer>0</integer>
-        </dict>
-    </array>
+    <dict>
+        <key>Hour</key>
+        <integer>18</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
 
     <key>StandardOutPath</key>
-    <string>/Users/bjornah/brain/.brain/log/launchd-capture.out</string>
+    <string>/Users/bjornah/brain/.brain/log/launchd-synthesize.out</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/bjornah/brain/.brain/log/launchd-capture.err</string>
+    <string>/Users/bjornah/brain/.brain/log/launchd-synthesize.err</string>
 
     <key>RunAtLoad</key>
     <false/>
