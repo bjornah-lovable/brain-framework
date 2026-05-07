@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Canonical Node entrypoint for the brain.
+#
+# All brain consumers — the launchd plists, the smoke test, MCP clients
+# (Claude Code, Cursor, ad-hoc agent harnesses) — should invoke Node
+# *through this wrapper* instead of resolving `node` from their own
+# environment. That way the brain runs under one Node binary
+# regardless of which shell / direnv / nix profile launched the
+# consumer, so the single `better_sqlite3.node` native binding is
+# always ABI-compatible.
+#
+# Default: /opt/homebrew/bin/node. Override per-machine with
+# BRAIN_NODE_BIN. Whatever you pick must be the same Node you
+# build native modules against — see scripts/rebuild-native.sh.
+#
+# ABI fail-fast: if scripts/.canonical-abi exists (written by
+# rebuild-native.sh) and disagrees with the chosen Node's
+# NODE_MODULE_VERSION, refuse to exec and point the user at the fix
+# instead of letting better-sqlite3 throw a cryptic dlopen error
+# halfway through MCP startup. Bypass with BRAIN_NODE_SKIP_ABI_CHECK=1
+# (rebuild-native.sh sets this so a stale stamp can't block its own
+# refresh).
+
+set -euo pipefail
+
+NODE_BIN="${BRAIN_NODE_BIN:-/opt/homebrew/bin/node}"
+
+if [[ ! -x "$NODE_BIN" ]]; then
+  echo "brain-node: $NODE_BIN not executable (set BRAIN_NODE_BIN to override)" >&2
+  exit 1
+fi
+
+if [[ -z "${BRAIN_NODE_SKIP_ABI_CHECK:-}" ]]; then
+  ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  STAMP="$ROOT/scripts/.canonical-abi"
+  if [[ -f "$STAMP" ]]; then
+    EXPECTED="$(tr -d '[:space:]' < "$STAMP")"
+    if [[ -n "$EXPECTED" ]]; then
+      ACTUAL="$("$NODE_BIN" -p 'process.versions.modules' 2>/dev/null | tr -d '[:space:]' || true)"
+      if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+        echo "brain-node: ABI mismatch — $NODE_BIN reports NODE_MODULE_VERSION $ACTUAL but the native binding was built for $EXPECTED" >&2
+        echo "  run $ROOT/scripts/rebuild-native.sh to refresh the binding" >&2
+        exit 1
+      fi
+    fi
+  fi
+fi
+
+exec "$NODE_BIN" "$@"

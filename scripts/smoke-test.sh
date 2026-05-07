@@ -7,6 +7,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SERVER="${ROOT}/server/dist/index.js"
+NODE="${ROOT}/scripts/brain-node"
 
 if [[ ! -f "${SERVER}" ]]; then
   echo "build first: pnpm build" >&2
@@ -82,7 +83,7 @@ mcp() {
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' \
     '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
     "${req}" \
-    | BRAIN_VAULT_ROOT="${VAULT}" node "${SERVER}" 2>/dev/null \
+    | BRAIN_VAULT_ROOT="${VAULT}" "${NODE}" "${SERVER}" 2>/dev/null \
     | tail -n 1
 }
 
@@ -100,7 +101,7 @@ n_default=$(BRAIN_EXPOSE_LIBRARIAN_TOOLS= /usr/bin/env -u BRAIN_EXPOSE_LIBRARIAN
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"smoke\",\"version\":\"0\"}}}" \
       "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}" \
       "{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"tools/list\",\"params\":{}}" \
-    | BRAIN_VAULT_ROOT="'"${VAULT}"'" node "'"${SERVER}"'" 2>/dev/null \
+    | BRAIN_VAULT_ROOT="'"${VAULT}"'" "'"${NODE}"'" "'"${SERVER}"'" 2>/dev/null \
     | tail -n 1
   ' | jq '.result.tools | length')
 echo "  tool_count_default=${n_default}  (expected 6 without flag)"
@@ -137,7 +138,7 @@ mcp "tools/call" '{"path":"profile/me.md","mode":"provenance"}' "brain-read" \
 
 mkdir -p /tmp/brain-smoke && echo "TOKEN=hunter2" > /tmp/brain-smoke/.env
 echo "--- 7. brain-librarian ingest .env rejected (CLI) ---"
-node "${ROOT}/server/dist/librarian/cli.js" ingest --source /tmp/brain-smoke/.env \
+"${NODE}" "${ROOT}/server/dist/librarian/cli.js" ingest --source /tmp/brain-smoke/.env \
   | jq -r '"  error_code=\(.error.code)"'
 rm -rf /tmp/brain-smoke
 
@@ -292,7 +293,7 @@ EOF
           CLAUDE_BIN="${ROOT}/scripts/fake-claude-synthesizer.sh" \
           BRAIN_FAKE_SLUG=brain-headless \
           BRAIN_FAKE_BLOCK_ID=project.brain-headless.recent-updates.v1 \
-          node "${ROOT}/server/dist/librarian/cli.js" consolidate --synthesize)"
+          "${NODE}" "${ROOT}/server/dist/librarian/cli.js" consolidate --synthesize)"
   echo "  ${HOUT}" | jq -r '"  scanned=\(.scanned) consolidated=\(.consolidated) method=\([.synthesis[].method] | join(","))"'
 fi
 
@@ -539,7 +540,7 @@ echo "  log_tail: ${LAST_LINE}"
 # Aggregate via CLI for a date-bracketed query, and via brain-status
 # for the always-on summary view. Both should pick up the run.
 TODAY="$(date +%Y-%m-%d)"
-COST_OUT="$(node "${ROOT}/server/dist/librarian/cli.js" cost --since "${TODAY}" --until "${TODAY}")"
+COST_OUT="$("${NODE}" "${ROOT}/server/dist/librarian/cli.js" cost --since "${TODAY}" --until "${TODAY}")"
 COST_TOTAL="$(echo "${COST_OUT}" | jq -r '.total_cost_usd')"
 COST_RUNS="$(echo "${COST_OUT}" | jq -r '.capture.runs')"
 STATUS_TODAY="$(mcp "tools/call" '{}' "brain-status" \
@@ -622,7 +623,7 @@ rm -f "${VAULT}/projects/imp-fixture.md" 2>/dev/null
 rm -f "${VAULT}/.brain/provenance/projects/imp-fixture.json" 2>/dev/null
 
 IMP_OUT="$(BRAIN_VAULT_ROOT="${VAULT}" BRAIN_PROJECTS_SOURCE="${FAKE_PROJ_SRC}" \
-  node "${ROOT}/server/dist/librarian/cli.js" import-pointers --source "${FAKE_PROJ_SRC}")"
+  "${NODE}" "${ROOT}/server/dist/librarian/cli.js" import-pointers --source "${FAKE_PROJ_SRC}")"
 echo "${IMP_OUT}" | jq -r '"  scanned=\(.scanned) created=\(.created | length) skipped=\(.skipped | length) collisions=\(.collisions | length) errors=\(.errors | length)"'
 [[ -f "${VAULT}/projects/imp-fixture.md" ]] || { echo "  FAIL: imp-fixture.md not created"; exit 1; }
 echo "${IMP_OUT}" | jq -e '.created[0].slug == "imp-fixture" and (.scanned == 1)' >/dev/null \
@@ -631,7 +632,7 @@ echo "  pointer page OK"
 
 echo "--- 23. import-pointers re-run is a no-op (already_present) ---"
 IMP_OUT2="$(BRAIN_VAULT_ROOT="${VAULT}" BRAIN_PROJECTS_SOURCE="${FAKE_PROJ_SRC}" \
-  node "${ROOT}/server/dist/librarian/cli.js" import-pointers --source "${FAKE_PROJ_SRC}")"
+  "${NODE}" "${ROOT}/server/dist/librarian/cli.js" import-pointers --source "${FAKE_PROJ_SRC}")"
 echo "${IMP_OUT2}" | jq -r '"  created=\(.created | length) skipped=\(.skipped | length)"'
 echo "${IMP_OUT2}" | jq -e '(.created | length) == 0 and (.skipped | length) == 1' >/dev/null \
   || { echo "  FAIL"; exit 1; }
@@ -639,7 +640,7 @@ echo "  idempotent OK"
 
 echo "--- 24. plan-imports → apply-synthesis (full-page parent-dispatch round-trip) ---"
 PLAN_IMP_OUT="$(BRAIN_VAULT_ROOT="${VAULT}" BRAIN_PROJECTS_SOURCE="${FAKE_PROJ_SRC}" \
-  node "${ROOT}/server/dist/librarian/cli.js" plan-imports --source "${FAKE_PROJ_SRC}" --status active)"
+  "${NODE}" "${ROOT}/server/dist/librarian/cli.js" plan-imports --source "${FAKE_PROJ_SRC}" --status active)"
 PLAN_IMP_ID="$(echo "${PLAN_IMP_OUT}" | jq -r '.plan_id')"
 # After A: one pending entry per project (not 4). The entry carries
 # blocks: [...4 block_ids] and a multi-block schema.
@@ -708,7 +709,7 @@ APPLY_RESULTS=$(jq -nc \
 RESULTS_FILE="$(mktemp -t brain-import-results.XXXXXX.json)"
 jq -nc --arg pid "${PLAN_IMP_ID}" --argjson r "${APPLY_RESULTS}" '{plan_id:$pid} + $r' > "${RESULTS_FILE}"
 APPLY_OUT="$(BRAIN_VAULT_ROOT="${VAULT}" \
-  node "${ROOT}/server/dist/librarian/cli.js" apply-imports "${PLAN_IMP_ID}" "${RESULTS_FILE}")"
+  "${NODE}" "${ROOT}/server/dist/librarian/cli.js" apply-imports "${PLAN_IMP_ID}" "${RESULTS_FILE}")"
 echo "${APPLY_OUT}" | jq -r '"  ok=\(.ok) consolidated=\(.consolidated) all_synthesized=\([.per_block[].method] | unique | join(","))"'
 # All four blocks should be method=synthesized (we fed full-page results).
 echo "${APPLY_OUT}" | jq -e '.ok == true and ([.per_block[].method] | unique) == ["synthesized"]' >/dev/null \
@@ -726,7 +727,7 @@ print('yes' if re.search(r'^import_source_sha256:', body, re.M) else 'no')
 
 # Re-running plan-imports with same content should skip (sha match).
 PLAN_RERUN="$(BRAIN_VAULT_ROOT="${VAULT}" BRAIN_PROJECTS_SOURCE="${FAKE_PROJ_SRC}" \
-  node "${ROOT}/server/dist/librarian/cli.js" plan-imports --source "${FAKE_PROJ_SRC}" --status active)"
+  "${NODE}" "${ROOT}/server/dist/librarian/cli.js" plan-imports --source "${FAKE_PROJ_SRC}" --status active)"
 RERUN_PENDING="$(echo "${PLAN_RERUN}" | jq '.pending_imports | length')"
 echo "  rerun pending=${RERUN_PENDING}"
 [[ "${RERUN_PENDING}" == "0" ]] || { echo "  FAIL: re-run should skip via sha"; exit 1; }
@@ -757,7 +758,7 @@ for i in 1 2 3 4 5 6 7 8; do
   echo "- note ${i}" > "${TIER_SRC}/tier-done-2026-04-01/notes/${d}-note${i}.md"
 done
 TIER_OUT="$(BRAIN_VAULT_ROOT="${VAULT}" BRAIN_PROJECTS_SOURCE="${TIER_SRC}" \
-  node "${ROOT}/server/dist/librarian/cli.js" plan-imports --source "${TIER_SRC}" --status active,done --force)"
+  "${NODE}" "${ROOT}/server/dist/librarian/cli.js" plan-imports --source "${TIER_SRC}" --status active,done --force)"
 ACTIVE_SRC_N="$(echo "${TIER_OUT}" | jq '.pending_imports[] | select(.project_slug == "tier-active") | .sources | length')"
 DONE_SRC_N="$(echo "${TIER_OUT}" | jq '.pending_imports[] | select(.project_slug == "tier-done") | .sources | length')"
 echo "  active_sources=${ACTIVE_SRC_N} done_sources=${DONE_SRC_N}"
@@ -801,7 +802,7 @@ capture_kind: finding
 ## Findings
 - Identical-bullet dedup test; should appear exactly once on the page.
 EOF
-BRAIN_VAULT_ROOT="${VAULT}" node "${ROOT}/server/dist/librarian/cli.js" consolidate >/dev/null
+BRAIN_VAULT_ROOT="${VAULT}" "${NODE}" "${ROOT}/server/dist/librarian/cli.js" consolidate >/dev/null
 DEDUP_BULLETS=$(grep -c "Identical-bullet dedup test" "${VAULT}/projects/dedup-smoke.md" 2>/dev/null || echo 0)
 echo "  bullets_on_page=${DEDUP_BULLETS}"
 [[ "${DEDUP_BULLETS}" == "1" ]] || { echo "  FAIL: expected 1 bullet, got ${DEDUP_BULLETS}"; exit 1; }
@@ -838,9 +839,9 @@ PY
 # Pre-clean.
 rm -f "${VAULT}/projects/big-fixture.md" 2>/dev/null
 BRAIN_VAULT_ROOT="${VAULT}" BRAIN_PROJECTS_SOURCE="${BIG_PROJ_SRC}" \
-  node "${ROOT}/server/dist/librarian/cli.js" import-pointers --source "${BIG_PROJ_SRC}" >/dev/null
+  "${NODE}" "${ROOT}/server/dist/librarian/cli.js" import-pointers --source "${BIG_PROJ_SRC}" >/dev/null
 PLAN_BIG_OUT="$(BRAIN_VAULT_ROOT="${VAULT}" BRAIN_PROJECTS_SOURCE="${BIG_PROJ_SRC}" \
-  node "${ROOT}/server/dist/librarian/cli.js" plan-imports --source "${BIG_PROJ_SRC}" --status active)"
+  "${NODE}" "${ROOT}/server/dist/librarian/cli.js" plan-imports --source "${BIG_PROJ_SRC}" --status active)"
 HAS_TRUNCATION=$(echo "${PLAN_BIG_OUT}" | jq -r '.pending_imports[0].prompt' | grep -c "_truncation-note" || echo 0)
 HAS_TRUNCATION_BODY=$(echo "${PLAN_BIG_OUT}" | jq -r '.pending_imports[0].prompt' | grep -c "INPUT TRUNCATED" || echo 0)
 echo "  truncation_note_in_prompt=${HAS_TRUNCATION} truncation_body_in_prompt=${HAS_TRUNCATION_BODY}"
@@ -870,7 +871,7 @@ cat > "${SESSIONS_LOG}" <<EOF
 {"session_id":"old-only","last_seen_at":"2024-01-01T00:00:00Z"}
 EOF
 LINT_OUT="$(BRAIN_VAULT_ROOT="${VAULT}" \
-  node "${ROOT}/server/dist/librarian/cli.js" lint)"
+  "${NODE}" "${ROOT}/server/dist/librarian/cli.js" lint)"
 echo "  ${LINT_OUT}"
 echo "${LINT_OUT}" | jq -e '
   .swept_search_runs == 1

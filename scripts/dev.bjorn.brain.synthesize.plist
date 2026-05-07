@@ -9,7 +9,7 @@
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>/opt/homebrew/bin/node /Users/bjornah/brain/code/server/dist/librarian/cli.js consolidate --synthesize &gt;&gt; /Users/bjornah/brain/.brain/log/launchd-synthesize.out 2&gt;&gt; /Users/bjornah/brain/.brain/log/launchd-synthesize.err</string>
+        <string>/Users/bjornah/brain/code/scripts/brain-node /Users/bjornah/brain/code/server/dist/librarian/cli.js consolidate --synthesize &gt;&gt; /Users/bjornah/brain/.brain/log/launchd-synthesize.out 2&gt;&gt; /Users/bjornah/brain/.brain/log/launchd-synthesize.err</string>
     </array>
 
     <key>EnvironmentVariables</key>

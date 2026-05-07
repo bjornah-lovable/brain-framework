@@ -45,7 +45,7 @@ SCHEMA_FILE="${SCRIPT_DIR}/prompts/brain-capture-delta.schema.json"
 LIBRARIAN_CLI="${BRAIN_LIBRARIAN_CLI:-${SCRIPT_DIR}/../server/dist/librarian/cli.js}"
 CLAUDE_PROJECTS="${BRAIN_CLAUDE_PROJECTS:-${HOME}/.claude/projects}"
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
-NODE_BIN="${NODE_BIN:-node}"
+NODE_BIN="${NODE_BIN:-${SCRIPT_DIR}/../scripts/brain-node}"
 
 # Load model + budget + truncation defaults from .brain/config.yaml.
 # The export prints KEY=VAL lines; existing env values (set by the

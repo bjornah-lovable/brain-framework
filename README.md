@@ -66,14 +66,32 @@ scripts/            launchd installer, settings installer, smoke test,
 
 Requires Node 20+ and `pnpm`.
 
+The brain pins one **canonical Node** that all runtime consumers — the
+launchd plists, the smoke test, the MCP server registration in
+`~/.claude.json` (and any other harness) — invoke through
+`scripts/brain-node`. The native `better_sqlite3.node` binding is built
+once for that Node's ABI and works everywhere downstream. Default
+canonical Node is `/opt/homebrew/bin/node`; override per machine with
+`BRAIN_NODE_BIN`.
+
+`pnpm` / `npm` / `npx` all shebang `#!/usr/bin/env node`, so on a
+machine with a different Node first on PATH (e.g. nix-shipped Node
+from `devenv`), `pnpm install` / `pnpm rebuild better-sqlite3` will
+silently build the binding for the *wrong* ABI. The launchd synthesize
+job then fails to load with a `NODE_MODULE_VERSION` mismatch (this
+stalled the librarian for a day in 2026-05). To stay safe:
+
 ```bash
-pnpm install
+pnpm install --ignore-scripts
 pnpm build
+./scripts/rebuild-native.sh
 ```
 
-The build also rebuilds the `better-sqlite3` native binding for the
-current Node version. If you upgrade Node, run `pnpm rebuild
-better-sqlite3` (or delete `node_modules` and reinstall).
+`--ignore-scripts` skips pnpm's postinstall rebuild;
+`scripts/rebuild-native.sh` then invokes `node-gyp` directly under
+`brain-node` so the binding matches the canonical Node. Re-run
+`./scripts/rebuild-native.sh` after every `brew upgrade node` (or
+whatever bumps `brain-node`'s target).
 
 ## Smoke test
 
@@ -94,7 +112,7 @@ run against a specific existing vault, set `BRAIN_SMOKE_VAULT=<path>`.
 {
   "mcpServers": {
     "brain": {
-      "command": "node",
+      "command": "/Users/bjornah/brain/code/scripts/brain-node",
       "args": ["/Users/bjornah/brain/code/server/dist/index.js"],
       "env": {
         "BRAIN_VAULT_ROOT": "/Users/bjornah/brain"
@@ -103,6 +121,10 @@ run against a specific existing vault, set `BRAIN_SMOKE_VAULT=<path>`.
   }
 }
 ```
+
+Use the `scripts/brain-node` wrapper (not bare `node`) so the MCP
+server runs under the same Node binary as the launchd jobs and the
+smoke test, regardless of which shell launched the consumer.
 
 `scripts/install-settings.sh` does this additively (preserves any
 existing entries) and also installs the `PreToolUse` sacred-paths

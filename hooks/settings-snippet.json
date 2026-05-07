@@ -3,7 +3,7 @@
 
   "mcpServers": {
     "brain": {
-      "command": "node",
+      "command": "/Users/bjornah/brain/code/scripts/brain-node",
       "args": ["/Users/bjornah/brain/code/server/dist/index.js"],
       "env": {
         "BRAIN_VAULT_ROOT": "/Users/bjornah/brain"
