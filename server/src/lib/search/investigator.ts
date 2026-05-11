@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Candidate } from "./candidates.js";
 import { loadConfig } from "../config.js";
+import { parseHeadlessJsonOutput } from "../headless-json.js";
 import { vaultPaths } from "../vault.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -154,7 +155,7 @@ export async function runInvestigator(
   const claudeBin = process.env.CLAUDE_BIN ?? "claude";
 
   const { prompt, promptSha } = buildInvestigatorPrompt(input);
-  const schemaPath = loadAssetPath("search-dossier.schema.json");
+  const schemaJson = loadAsset("search-dossier.schema.json");
   const stdin = prompt;
 
   const args = [
@@ -172,7 +173,7 @@ export async function runInvestigator(
     "--output-format",
     "json",
     "--json-schema",
-    schemaPath,
+    schemaJson,
   ];
 
   // --bare requires an API key (OAuth and keychain are explicitly
@@ -276,24 +277,8 @@ function failDossier(msg: string): InvestigatorDossier {
  * stdout as the dossier directly (older CLI versions / edge cases).
  */
 function parseSchemaEnforcedOutput(out: string): InvestigatorDossier | null {
-  const trimmed = out.trim();
-  if (trimmed.length === 0) return null;
-  try {
-    const top = JSON.parse(trimmed);
-    if (looksLikeDossier(top)) return top;
-    if (typeof top === "object" && top !== null && "result" in top) {
-      const inner = (top as { result: unknown }).result;
-      if (typeof inner === "string") {
-        const parsed = JSON.parse(inner);
-        if (looksLikeDossier(parsed)) return parsed;
-      } else if (looksLikeDossier(inner)) {
-        return inner as InvestigatorDossier;
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
+  const parsed = parseHeadlessJsonOutput(out);
+  return looksLikeDossier(parsed) ? parsed : null;
 }
 
 /**

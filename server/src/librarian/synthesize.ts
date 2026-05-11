@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../lib/config.js";
+import { parseHeadlessJsonOutput } from "../lib/headless-json.js";
 import { vaultPaths } from "../lib/vault.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -283,7 +284,7 @@ export async function runSynthesizer(
   const claudeBin = process.env.CLAUDE_BIN ?? "claude";
 
   const { prompt, promptSha } = buildSynthesisPrompt(input);
-  const schemaPath = loadAssetPath("librarian-synthesis.schema.json");
+  const schemaJson = loadAsset("librarian-synthesis.schema.json");
   const stdin = prompt;
 
   const flags = [
@@ -301,7 +302,7 @@ export async function runSynthesizer(
     "--output-format",
     "json",
     "--json-schema",
-    schemaPath,
+    schemaJson,
   ];
 
   // apiKeyHelper auth for --bare. See investigator.ts for the rationale.
@@ -376,24 +377,8 @@ export async function runSynthesizer(
 }
 
 function parseEnforced(out: string): SynthesisOutput | null {
-  const trimmed = out.trim();
-  if (trimmed.length === 0) return null;
-  try {
-    const top = JSON.parse(trimmed);
-    if (looksLikeSynthesisOutput(top)) return top;
-    if (typeof top === "object" && top !== null && "result" in top) {
-      const inner = (top as { result: unknown }).result;
-      if (typeof inner === "string") {
-        const reparsed = JSON.parse(inner);
-        if (looksLikeSynthesisOutput(reparsed)) return reparsed;
-      } else if (looksLikeSynthesisOutput(inner)) {
-        return inner as SynthesisOutput;
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
+  const parsed = parseHeadlessJsonOutput(out);
+  return looksLikeSynthesisOutput(parsed) ? parsed : null;
 }
 
 /**
@@ -441,7 +426,7 @@ export async function runFullPageImportSynthesizer(
   const claudeBin = process.env.CLAUDE_BIN ?? "claude";
 
   const { prompt, promptSha } = buildFullPageImportPrompt(input);
-  const schemaPath = loadAssetPath("librarian-import-fullpage.schema.json");
+  const schemaJson = loadAsset("librarian-import-fullpage.schema.json");
 
   const flags = [
     "--bare",
@@ -458,7 +443,7 @@ export async function runFullPageImportSynthesizer(
     "--output-format",
     "json",
     "--json-schema",
-    schemaPath,
+    schemaJson,
   ];
 
   const settingsBare = resolve(vaultPaths().dot, "settings-bare.json");
@@ -529,22 +514,6 @@ export async function runFullPageImportSynthesizer(
 }
 
 function parseFullPageEnforced(out: string): FullPageImportOutput | null {
-  const trimmed = out.trim();
-  if (trimmed.length === 0) return null;
-  try {
-    const top = JSON.parse(trimmed);
-    if (looksLikeFullPageImportOutput(top)) return top;
-    if (typeof top === "object" && top !== null && "result" in top) {
-      const inner = (top as { result: unknown }).result;
-      if (typeof inner === "string") {
-        const reparsed = JSON.parse(inner);
-        if (looksLikeFullPageImportOutput(reparsed)) return reparsed;
-      } else if (looksLikeFullPageImportOutput(inner)) {
-        return inner as FullPageImportOutput;
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
+  const parsed = parseHeadlessJsonOutput(out);
+  return looksLikeFullPageImportOutput(parsed) ? parsed : null;
 }

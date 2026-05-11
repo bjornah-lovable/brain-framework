@@ -150,7 +150,7 @@ PY
 # Usage: parse_field <json> <field-path>
 parse_field() {
   BRAIN_RAW="$1" BRAIN_FIELD="$2" /usr/bin/python3 - <<'PY'
-import json, os, sys
+import json, os, re, sys
 raw = os.environ["BRAIN_RAW"]
 field = os.environ["BRAIN_FIELD"]
 try:
@@ -159,8 +159,14 @@ except Exception:
     sys.exit(0)
 inner = d.get("result") if isinstance(d, dict) else None
 if isinstance(inner, str):
+    s = inner.strip()
+    # The model occasionally wraps the JSON in a ```json … ``` fenced
+    # block even under --json-schema. Strip the fence before reparsing.
+    m = re.match(r"^```[a-zA-Z0-9_-]*\s*\n([\s\S]*?)\n```$", s)
+    if m:
+        s = m.group(1).strip()
     try:
-        inner = json.loads(inner)
+        inner = json.loads(s)
     except Exception:
         inner = None
 obj = inner if isinstance(inner, dict) else d if isinstance(d, dict) else {}
