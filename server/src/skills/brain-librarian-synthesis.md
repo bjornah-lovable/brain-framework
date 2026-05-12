@@ -11,8 +11,8 @@ to the schema below. **No prose, no explanations outside the JSON.**
 ```json
 {
   "project_slug": "stuck-mitigation",
-  "block_id": "project.stuck-mitigation.where-we-are.v3",
-  "section_kind": "where_we_are | blockers | recent_updates | artifacts",
+  "block_id": "project.stuck-mitigation.recent-updates.v1",
+  "section_kind": "blockers | recent_updates | artifacts",
   "current_block_body": "<current markdown of this block, including the heading and block-id comment>",
   "captures_to_promote": [
     {
@@ -33,16 +33,10 @@ to the schema below. **No prose, no explanations outside the JSON.**
 
 ## What to do
 
-### `where_we_are`
-- Synthesize 2–5 bullets that describe the **current state** of the
-  project, replacing (not appending to) any stale bullets in
-  `current_block_body`.
-- Each bullet is one sentence. Specific, calibrated, no hedging
-  filler.
-- Drop superseded statements rather than caveating them. The
-  captures contain the latest information; trust them over the
-  current block.
-- Do NOT include date prefixes; "Where we are" is the *now*.
+(Note: there is no `where_we_are` section_kind. That question is
+served on demand by `brain-search intent=where_are_we project_slug=…`
+which reads the three blocks below plus recent captures and
+synthesises a holistic view at query time. PLAN_v3 delta #15.)
 
 ### `blockers`
 - List currently-open blockers and next actions. Drop ones that have
@@ -88,8 +82,8 @@ replace, but drop entries that the captures contradict or supersede.
 - The `new_block_body` field must include the heading line (`## ...`)
   and the `<!-- brain:block ... -->` comment exactly as in
   `current_block_body`. Do not change them.
-- Keep `new_block_body` under 600 words for `where_we_are`,
-  `blockers`, `artifacts`; `recent_updates` is unbounded (it grows).
+- Keep `new_block_body` under 600 words for `blockers` and
+  `artifacts`; `recent_updates` is unbounded (it grows).
 - If the new captures contain nothing that warrants changing the
   block, return `current_block_body` verbatim and previous metadata
   unchanged. Synthesis is allowed to be a no-op.

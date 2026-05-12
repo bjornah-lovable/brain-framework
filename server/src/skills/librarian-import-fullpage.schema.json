@@ -1,12 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "LibrarianImportFullPage",
-  "description": "Output contract for the full-page import synthesizer. Produces all four section blocks of a project page in one response. Each block has the same shape as a single LibrarianSynthesis output.",
+  "description": "Output contract for the full-page import synthesizer. Produces the three section blocks of a project page in one response. Each block has the same shape as a single LibrarianSynthesis output. ('Where we are' is no longer a stored block as of PLAN_v3 delta #15 — served on demand by `brain-search intent=where_are_we`.)",
   "type": "object",
   "additionalProperties": false,
-  "required": ["where_we_are", "blockers", "recent_updates", "artifacts"],
+  "required": ["blockers", "recent_updates", "artifacts"],
   "properties": {
-    "where_we_are": { "$ref": "#/$defs/Block" },
     "blockers": { "$ref": "#/$defs/Block" },
     "recent_updates": { "$ref": "#/$defs/Block" },
     "artifacts": { "$ref": "#/$defs/Block" }

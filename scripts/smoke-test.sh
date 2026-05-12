@@ -642,8 +642,9 @@ echo "--- 24. plan-imports → apply-synthesis (full-page parent-dispatch round-
 PLAN_IMP_OUT="$(BRAIN_VAULT_ROOT="${VAULT}" BRAIN_PROJECTS_SOURCE="${FAKE_PROJ_SRC}" \
   "${NODE}" "${ROOT}/server/dist/librarian/cli.js" plan-imports --source "${FAKE_PROJ_SRC}" --status active)"
 PLAN_IMP_ID="$(echo "${PLAN_IMP_OUT}" | jq -r '.plan_id')"
-# After A: one pending entry per project (not 4). The entry carries
-# blocks: [...4 block_ids] and a multi-block schema.
+# After PLAN_v3 delta #15 (Where-we-are moved to on-demand brokered
+# search), the full-page import schema produces three blocks per
+# project, not four.
 PI_PENDING_COUNT="$(echo "${PLAN_IMP_OUT}" | jq '.pending_imports | length')"
 PI_BLOCKS_PER_ENTRY="$(echo "${PLAN_IMP_OUT}" | jq '.pending_imports[0].blocks | length')"
 PI_PROJECT_STATUS="$(echo "${PLAN_IMP_OUT}" | jq -r '.pending_imports[0].status')"
@@ -653,9 +654,9 @@ PI_GUIDANCE_LEN="$(echo "${PLAN_IMP_OUT}" | jq -r '.dispatch_guidance | length')
 echo "  plan_id=${PLAN_IMP_ID:0:12}... pending_projects=${PI_PENDING_COUNT} blocks=${PI_BLOCKS_PER_ENTRY} status=${PI_PROJECT_STATUS} schema_required=${PI_SCHEMA_KEYS} recommended_model=${PI_REC_MODEL} guidance_len=${PI_GUIDANCE_LEN}"
 [[ -n "${PLAN_IMP_ID}" && "${PLAN_IMP_ID}" != "null" \
    && "${PI_PENDING_COUNT}" == "1" \
-   && "${PI_BLOCKS_PER_ENTRY}" == "4" \
+   && "${PI_BLOCKS_PER_ENTRY}" == "3" \
    && "${PI_PROJECT_STATUS}" == "active" \
-   && "${PI_SCHEMA_KEYS}" == "4" \
+   && "${PI_SCHEMA_KEYS}" == "3" \
    && "${PI_REC_MODEL}" == "claude-opus-4-7" && "${PI_GUIDANCE_LEN}" -gt 50 ]] \
   || { echo "  FAIL"; exit 1; }
 
@@ -666,23 +667,15 @@ PI_SOURCES_HAS_README="$(echo "${PLAN_IMP_OUT}" | jq -r '.pending_imports[0].sou
 [[ "${PI_SOURCES_HAS_README}" == "true" ]] || { echo "  FAIL: README missing from sources"; exit 1; }
 
 # Build a hand-crafted full-page response (one Task subagent's output)
-# and split it into four per-block result entries — exactly what the
-# parent does in production.
-WW_BLOCK="$(echo "${PLAN_IMP_OUT}" | jq -r '.pending_imports[0].blocks[] | select(.section_id=="where-we-are") | .block_id')"
+# and split it into per-block result entries — exactly what the parent
+# does in production.
 BL_BLOCK="$(echo "${PLAN_IMP_OUT}" | jq -r '.pending_imports[0].blocks[] | select(.section_id=="blockers") | .block_id')"
 RU_BLOCK="$(echo "${PLAN_IMP_OUT}" | jq -r '.pending_imports[0].blocks[] | select(.section_id=="recent-updates") | .block_id')"
 AR_BLOCK="$(echo "${PLAN_IMP_OUT}" | jq -r '.pending_imports[0].blocks[] | select(.section_id=="artifacts") | .block_id')"
 APPLY_RESULTS=$(jq -nc \
-  --arg ww "${WW_BLOCK}" --arg bl "${BL_BLOCK}" --arg ru "${RU_BLOCK}" --arg ar "${AR_BLOCK}" '
+  --arg bl "${BL_BLOCK}" --arg ru "${RU_BLOCK}" --arg ar "${AR_BLOCK}" '
 {
   results: [
-    { block_id: $ww, output: {
-        new_block_body: ("## Where we are\n<!-- brain:block " + $ww + " -->\n\n- Smoke fixture imported via full-page synthesis; pointer page derived from meta.yaml; all four blocks rewritten from README + notes.\n"),
-        summary: "Smoke fixture import — verifies single-call full-page synthesis end-to-end.",
-        aliases: ["import smoke", "full-page synth"],
-        entities: ["plan-imports", "apply-synthesis", "full-page schema"],
-        search_terms: ["import round-trip", "single-call synthesis"]
-    }},
     { block_id: $bl, output: {
         new_block_body: ("## Open blockers / next actions\n<!-- brain:block " + $bl + " -->\n\n- 2026-04-09 — Open question from README: smoke fixture exercises blocker section.\n"),
         summary: "Open items for the smoke fixture (one synthetic).",
@@ -989,6 +982,161 @@ BRAIN_VAULT_ROOT="${VAULT}" "${NODE}" "${ROOT}/server/dist/librarian/cli.js" lin
 [[ -f "${TRUNC_PAGE}" ]] || { echo "  FAIL: fixture page wrongly unlinked"; exit 1; }
 [[ -f "${TRICKY_PAGE}" ]] || { echo "  FAIL: page with .md.tmp. in slug wrongly unlinked"; exit 1; }
 echo "  truncated-bullet cleanup OK"
+
+echo "--- 29. brain-search intent=where_are_we (on-demand broker, cache, invalidation) ---"
+# Build a fresh project page + one processed capture for that project.
+WWA_SLUG="wwa-fixture"
+WWA_PAGE="${VAULT}/projects/${WWA_SLUG}.md"
+mkdir -p "${VAULT}/projects" "${VAULT}/.brain/processed"
+cat > "${WWA_PAGE}" <<EOF
+---
+slug: ${WWA_SLUG}
+last_touched: '2026-05-12T00:00:00.000Z'
+status: active
+---
+# WWA fixture
+
+## Open blockers / next actions
+<!-- brain:block project.${WWA_SLUG}.blockers.v1 -->
+
+- 2026-05-11 — blocked on classifier reliability; needs n=50 calibration pass.
+
+## Recent updates
+<!-- brain:block project.${WWA_SLUG}.recent-updates.v1 -->
+
+- 2026-05-11 — landed first classifier prototype; offline eval at 0.62 macro-F1.
+
+## Artifacts
+<!-- brain:block project.${WWA_SLUG}.artifacts.v1 -->
+
+_(no entries yet)_
+EOF
+WWA_PROC="${VAULT}/.brain/processed/session-wwafix-1.md"
+cat > "${WWA_PROC}" <<EOF
+---
+session_id: wwafix
+created_at: '2026-05-12T07:00:00.000Z'
+trigger: manual
+project_slug: ${WWA_SLUG}
+capture_kind: finding
+---
+## Findings
+- WWA fixture capture content; should appear as a candidate.
+EOF
+
+# 29a. fast mode — deterministic candidates, no LLM, kind=dossier.
+WWA_FAST="$(mcp "tools/call" \
+  "$(jq -nc --arg s "${WWA_SLUG}" '{query:"where are we on \($s)", intent:"where_are_we", project_slug:$s, depth:"fast"}')" \
+  "brain-search")"
+WWA_FAST_KIND="$(echo "${WWA_FAST}" | jq -r '.result.content[0].text | fromjson | .kind')"
+WWA_FAST_CANDS="$(echo "${WWA_FAST}" | jq -r '.result.content[0].text | fromjson | .dossier.diagnostics.candidates_considered')"
+echo "  fast kind=${WWA_FAST_KIND} candidates=${WWA_FAST_CANDS}"
+[[ "${WWA_FAST_KIND}" == "dossier" && "${WWA_FAST_CANDS}" == "2" ]] || { echo "  FAIL: fast mode shape"; exit 1; }
+
+# 29b. standard mode — kind=pending_dispatch, prompt mentions page + capture.
+WWA_STD="$(mcp "tools/call" \
+  "$(jq -nc --arg s "${WWA_SLUG}" '{query:"where are we on \($s)", intent:"where_are_we", project_slug:$s, depth:"standard"}')" \
+  "brain-search")"
+WWA_STD_KIND="$(echo "${WWA_STD}" | jq -r '.result.content[0].text | fromjson | .kind')"
+WWA_STD_ID="$(echo "${WWA_STD}" | jq -r '.result.content[0].text | fromjson | .search_id')"
+WWA_STD_PROMPT_HAS_PAGE="$(echo "${WWA_STD}" | jq -r '.result.content[0].text | fromjson | .prompt | contains("projects/'"${WWA_SLUG}"'.md")')"
+WWA_STD_PROMPT_HAS_CAP="$(echo "${WWA_STD}" | jq -r '.result.content[0].text | fromjson | .prompt | contains("WWA fixture capture content")')"
+echo "  std kind=${WWA_STD_KIND} prompt-has-page=${WWA_STD_PROMPT_HAS_PAGE} prompt-has-capture=${WWA_STD_PROMPT_HAS_CAP}"
+[[ "${WWA_STD_KIND}" == "pending_dispatch" \
+   && "${WWA_STD_PROMPT_HAS_PAGE}" == "true" \
+   && "${WWA_STD_PROMPT_HAS_CAP}" == "true" ]] || { echo "  FAIL: standard mode shape"; exit 1; }
+
+# 29c. finalize with a hand-crafted dossier → cache file written.
+WWA_DOSS=$(jq -nc '{
+  query_interpretation: "Holistic state of WWA fixture project.",
+  answer: "Project active. Classifier prototype landed at 0.62 macro-F1; blocked on n=50 calibration pass.",
+  confidence: "high",
+  sources: [],
+  suggested_reads: [],
+  open_questions: []
+}')
+WWA_FIN_INPUT=$(jq -nc --arg sid "${WWA_STD_ID}" --argjson d "${WWA_DOSS}" '{search_id:$sid, dossier:$d}')
+WWA_FIN="$(mcp "tools/call" "${WWA_FIN_INPUT}" "brain-search-finalize")"
+echo "${WWA_FIN}" | jq -e '.result.content[0].text | fromjson | .ok == true' >/dev/null \
+  || { echo "  FAIL: finalize"; exit 1; }
+WWA_CACHE="${VAULT}/.brain/search/cache/where-we-are/${WWA_SLUG}.json"
+[[ -f "${WWA_CACHE}" ]] || { echo "  FAIL: cache not written at ${WWA_CACHE}"; exit 1; }
+echo "  cache written: $(basename "${WWA_CACHE}")"
+
+# 29d. re-query with the same page mtime → cache HIT (kind=dossier,
+#       investigator_status=cache_hit), no new pending_dispatch.
+WWA_HIT="$(mcp "tools/call" \
+  "$(jq -nc --arg s "${WWA_SLUG}" '{query:"where are we on \($s)", intent:"where_are_we", project_slug:$s, depth:"standard"}')" \
+  "brain-search")"
+WWA_HIT_KIND="$(echo "${WWA_HIT}" | jq -r '.result.content[0].text | fromjson | .kind')"
+WWA_HIT_STATUS="$(echo "${WWA_HIT}" | jq -r '.result.content[0].text | fromjson | .dossier.diagnostics.investigator_status')"
+WWA_HIT_ANSWER="$(echo "${WWA_HIT}" | jq -r '.result.content[0].text | fromjson | .dossier.answer')"
+echo "  hit kind=${WWA_HIT_KIND} status=${WWA_HIT_STATUS}"
+[[ "${WWA_HIT_KIND}" == "dossier" && "${WWA_HIT_STATUS}" == "cache_hit" ]] || { echo "  FAIL: cache hit shape"; exit 1; }
+echo "${WWA_HIT_ANSWER}" | grep -q "Classifier prototype landed" || { echo "  FAIL: cached answer not returned"; exit 1; }
+
+# 29e. inode-only mtime bump (no content change) → cache STILL HITS.
+# This is the deliberate behaviour: git checkout / rsync / backup tools
+# bump mtime without changing content; spurious re-dispatch would be
+# wasteful and was a reviewer-flagged regression risk.
+sleep 1
+/usr/bin/touch "${WWA_PAGE}"
+WWA_TOUCH="$(mcp "tools/call" \
+  "$(jq -nc --arg s "${WWA_SLUG}" '{query:"where are we on \($s)", intent:"where_are_we", project_slug:$s, depth:"standard"}')" \
+  "brain-search")"
+WWA_TOUCH_KIND="$(echo "${WWA_TOUCH}" | jq -r '.result.content[0].text | fromjson | .kind')"
+WWA_TOUCH_STATUS="$(echo "${WWA_TOUCH}" | jq -r '.result.content[0].text | fromjson | .dossier.diagnostics.investigator_status')"
+echo "  inode-touch kind=${WWA_TOUCH_KIND} status=${WWA_TOUCH_STATUS}"
+[[ "${WWA_TOUCH_KIND}" == "dossier" && "${WWA_TOUCH_STATUS}" == "cache_hit" ]] || { echo "  FAIL: inode-only touch should NOT invalidate the cache"; exit 1; }
+
+# 29f. real content change → cache MISSES, re-dispatches.
+echo "" >> "${WWA_PAGE}"  # add a newline → content sha changes
+echo "- 2026-05-12 — fresh bullet added after first dispatch." >> "${WWA_PAGE}"
+WWA_MISS="$(mcp "tools/call" \
+  "$(jq -nc --arg s "${WWA_SLUG}" '{query:"where are we on \($s)", intent:"where_are_we", project_slug:$s, depth:"standard"}')" \
+  "brain-search")"
+WWA_MISS_KIND="$(echo "${WWA_MISS}" | jq -r '.result.content[0].text | fromjson | .kind')"
+echo "  post-edit kind=${WWA_MISS_KIND}"
+[[ "${WWA_MISS_KIND}" == "pending_dispatch" ]] || { echo "  FAIL: content change should have invalidated the cache"; exit 1; }
+
+# 29g. C1 TOCTOU guard: if the page is updated BETWEEN dispatch and
+# finalize, the cache MUST be keyed to the dispatch-time snapshot,
+# not the finalize-time state. Otherwise stale answers are cached
+# against a newer page and the cache never re-invalidates.
+WWA_MISS_ID="$(echo "${WWA_MISS}" | jq -r '.result.content[0].text | fromjson | .search_id')"
+# Mutate the page mid-flight.
+echo "- 2026-05-12 — mutation BETWEEN dispatch and finalize." >> "${WWA_PAGE}"
+WWA_TOC_DOSS=$(jq -nc '{
+  query_interpretation: "Holistic state of WWA fixture project.",
+  answer: "Snapshot at dispatch time — does not include the mid-flight mutation.",
+  confidence: "high",
+  sources: [],
+  suggested_reads: [],
+  open_questions: []
+}')
+WWA_TOC_FIN_INPUT=$(jq -nc --arg sid "${WWA_MISS_ID}" --argjson d "${WWA_TOC_DOSS}" '{search_id:$sid, dossier:$d}')
+mcp "tools/call" "${WWA_TOC_FIN_INPUT}" "brain-search-finalize" >/dev/null
+# A query NOW (against the post-mutation page) MUST miss the cache
+# and re-dispatch, because the cache was keyed to the dispatch-time
+# snapshot, not the post-mutation page state.
+WWA_TOC_QRY="$(mcp "tools/call" \
+  "$(jq -nc --arg s "${WWA_SLUG}" '{query:"where are we on \($s)", intent:"where_are_we", project_slug:$s, depth:"standard"}')" \
+  "brain-search")"
+WWA_TOC_KIND="$(echo "${WWA_TOC_QRY}" | jq -r '.result.content[0].text | fromjson | .kind')"
+echo "  TOCTOU-after-finalize kind=${WWA_TOC_KIND}"
+[[ "${WWA_TOC_KIND}" == "pending_dispatch" ]] || { echo "  FAIL: TOCTOU — stale dossier should NOT be served against post-mutation page"; exit 1; }
+# Positive check: the cache file's `page_content_sha256` MUST equal
+# the pre-mutation sha (i.e. the dispatch-time snapshot). If a future
+# refactor caused finalize to silently skip the cache write, the
+# pending_dispatch result above would still satisfy the assertion but
+# the cache key wouldn't be what we claim. Compute the pre-mutation
+# sha by reverting the file to its post-29f state in memory.
+PRE_MUTATION_SHA="$(/usr/bin/sed '$d' "${WWA_PAGE}" | shasum -a 256 | awk '{print $1}')"
+CACHE_SHA="$(jq -r '.page_content_sha256' "${WWA_CACHE}")"
+echo "  cache pre-mutation sha=${CACHE_SHA:0:12}…  expected=${PRE_MUTATION_SHA:0:12}…"
+[[ "${CACHE_SHA}" == "${PRE_MUTATION_SHA}" ]] || { echo "  FAIL: cache key should be the dispatch-time content sha, not the finalize-time sha"; exit 1; }
+
+echo "  where_are_we broker OK"
 
 CAPTURE_POST_COUNT="$(/bin/ls "${VAULT}/captures" 2>/dev/null | wc -l | tr -d ' ')"
 echo "---"

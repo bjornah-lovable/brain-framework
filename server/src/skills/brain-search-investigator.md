@@ -57,6 +57,36 @@ below. **No prose, no explanations outside the JSON.**
 }
 ```
 
+## Intent-specific framing
+
+For most intents, the dossier's `answer` is a compact response to
+the natural-language query.
+
+**`intent: where_are_we` is different.** It is invoked when the
+caller asks "Where are we on project X?" and supplies that project's
+slug. The candidates you receive are NOT generic FTS5 hits — they
+are (1) a snapshot of the project page itself (Open blockers /
+Recent updates) and (2) the most-recent processed captures targeting
+that project. Your job is to produce a **holistic current-state
+summary** in the `answer` field, not a needle-in-haystack lookup.
+Specifically:
+
+- `answer` should be 3–6 short sentences (or 3–6 bullets) covering:
+  what the project is trying to do *as of now* (the current goal,
+  not the historical framing), what's open / blocked, what was most
+  recently decided or confirmed, and any active dependencies.
+- Lean on the captures for the most recent thinking; lean on the
+  page's Open-blockers for what's still outstanding; lean on
+  Recent-updates for the timeline.
+- If the project is `paused` / `done` / `abandoned`, say so first
+  and frame the rest accordingly.
+- `confidence: high` only if the captures are recent (last 7 days)
+  and consistent. If the page is empty or untouched for >14 days,
+  return `medium` with an explicit note in `open_questions`.
+- `open_questions` is the place to surface ambiguities you can't
+  resolve from the candidates alone — usually "where things stand
+  vs the original goal" requires evidence you don't have.
+
 ## Discipline
 
 - **Stay within the candidates given.** You are not allowed to invent

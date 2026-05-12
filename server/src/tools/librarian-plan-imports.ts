@@ -244,13 +244,13 @@ export function brainLibrarianPlanImports(input: {
       },
       recommended_model: cfg.librarian.import_model,
       dispatch_guidance:
-        "One-time legacy-project import. The schema produces all four section blocks " +
+        "One-time legacy-project import. The schema produces three section blocks " +
         "in one response. For each `pending_imports` entry: (1) run a Task subagent " +
         "(`subagent_type: \"general-purpose\"`, `model: \"opus\"`) with the supplied " +
-        "`prompt`; (2) parse the response — it has four sub-objects keyed " +
-        "`where_we_are`, `blockers`, `recent_updates`, `artifacts`; (3) build four " +
-        "result entries — `[{block_id: blocks[0].block_id, output: response.where_we_are}, " +
-        "{block_id: blocks[1].block_id, output: response.blockers}, ...]`; (4) call " +
+        "`prompt`; (2) parse the response — it has three sub-objects keyed " +
+        "`blockers`, `recent_updates`, `artifacts`; (3) build three " +
+        "result entries — `[{block_id: blocks[0].block_id, output: response.blockers}, " +
+        "{block_id: blocks[1].block_id, output: response.recent_updates}, ...]`; (4) call " +
         "`brain-librarian-apply-synthesis({plan_id, results: [...]})` once per project " +
         "(or batch all projects' results into one apply call). Apply will stamp " +
         "`import_source_sha256` so subsequent plan-imports runs short-circuit. " +
@@ -288,14 +288,12 @@ function buildFullPageInput(
     : "";
 
   const blockIds = {
-    where_we_are: projectBlockId(slug, "where-we-are"),
     blockers: projectBlockId(slug, "blockers"),
     recent_updates: projectBlockId(slug, "recent-updates"),
     artifacts: projectBlockId(slug, "artifacts"),
   };
 
   const currentBlockBodies = {
-    where_we_are: readBlockBody(pageBody, blockIds.where_we_are) ?? "",
     blockers: readBlockBody(pageBody, blockIds.blockers) ?? "",
     recent_updates: readBlockBody(pageBody, blockIds.recent_updates) ?? "",
     artifacts: readBlockBody(pageBody, blockIds.artifacts) ?? "",

@@ -13,8 +13,23 @@ import { parseDoc, stringifyDoc } from "../lib/frontmatter.js";
  * not Sonnet-synthesized — that's the next phase.
  */
 
+/**
+ * Sections written into the template for *new* project pages. The
+ * `Where we are` block is deliberately absent: it used to be a
+ * librarian-maintained stored summary (PLAN_v3 §1.5d), but it went
+ * stale between consolidation runs and the only refresh mechanism was
+ * a recurring synthesize job that re-paid the cost for every active
+ * project regardless of read demand. As of 2026-05-12 it is served
+ * on demand by `brain-search intent=where_are_we project_slug=<slug>`
+ * — fresh-on-read, cached on the project page's `last_touched`, zero
+ * cost from the API key (parent-dispatch). See PLAN_v3 §0 delta #15.
+ *
+ * Legacy pages still carry their old `Where we are` block content
+ * verbatim until a one-shot sweep removes it. The librarian no longer
+ * writes to that block: `CAPTURE_TO_SECTION` routes the last
+ * inbound kind (`state_change`) to `blockers` instead.
+ */
 export const PROJECT_SECTIONS = [
-  { heading: "Where we are", id: "where-we-are", kind: "where_we_are" },
   { heading: "Open blockers / next actions", id: "blockers", kind: "blockers" },
   { heading: "Recent updates", id: "recent-updates", kind: "recent_updates" },
   { heading: "Artifacts", id: "artifacts", kind: "artifacts" },
@@ -26,7 +41,13 @@ export type SectionId = (typeof PROJECT_SECTIONS)[number]["id"];
 const CAPTURE_TO_SECTION: Record<string, SectionId> = {
   decision: "recent-updates",
   finding: "recent-updates",
-  state_change: "where-we-are",
+  // `state_change` captures (e.g. "PR merged", "rolled out to 50%") are
+  // completed transitions, not open items. Routing them to
+  // `recent-updates` (the chronological log) rather than `blockers`
+  // (rendered as "Open blockers / next actions") matches their
+  // semantics. The "Where we are" view at query time picks them up
+  // from there along with everything else.
+  state_change: "recent-updates",
   blocker: "blockers",
   open_question: "blockers",
 };

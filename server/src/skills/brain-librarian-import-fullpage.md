@@ -6,10 +6,19 @@ folder under `/Users/bjornah/projects/<slug>-YYYY-MM-DD/`. The
 project may be active, paused, done, or abandoned — sources are
 filtered accordingly before they reach you.
 
-You produce **all four section blocks at once** (where_we_are,
-blockers, recent_updates, artifacts) in a single JSON response,
+You produce **three section blocks at once** (blockers,
+recent_updates, artifacts) in a single JSON response,
 conforming to the supplied schema (`librarian-import-fullpage.schema.json`).
 **No prose, no explanations outside the JSON.**
+
+Note: the project page no longer carries a stored "Where we are"
+block — that question is answered on demand at query time by
+`brain-search intent=where_are_we project_slug=<slug>` (PLAN_v3
+delta #15). The brain-search broker reads your three blocks
+(especially `blockers` + `recent_updates`) plus recent captures and
+synthesises the current state when asked. Concentrate on producing
+faithful blockers / timeline / artifacts content — the current-state
+view follows from those automatically.
 
 ## Input
 
@@ -17,14 +26,12 @@ conforming to the supplied schema (`librarian-import-fullpage.schema.json`).
 {
   "project_slug": "stuck-investigation",
   "block_ids": {
-    "where_we_are":     "project.stuck-investigation.where-we-are.v1",
     "blockers":         "project.stuck-investigation.blockers.v1",
     "recent_updates":   "project.stuck-investigation.recent-updates.v1",
     "artifacts":        "project.stuck-investigation.artifacts.v1"
   },
   "current_block_bodies": {
-    "where_we_are":   "<existing markdown for this block>",
-    "blockers":       "<...>",
+    "blockers":       "<existing markdown for this block>",
     "recent_updates": "<...>",
     "artifacts":      "<...>"
   },
@@ -63,28 +70,9 @@ git log are higher-signal than working notes; trust them.
 
 ## Section-by-section guidance
 
-The four blocks all live on the same page; treat them as
+The three blocks all live on the same page; treat them as
 complementary views of the same project, with non-overlapping
 purposes.
-
-### `where_we_are` — current state
-
-A cold-read summary of where the project stands as of the most
-recent file mtime (or git commit). 2–5 bullets, each one sentence.
-
-- Pull from the most recent notes, drafts, and commits — they
-  reflect now, not where things started.
-- The README's framing is the project's intent. The most recent
-  status line in the README (or the meta.yaml `summary:` field
-  in the input context) is authoritative for the current goal.
-- For status=done: the bullets describe the **outcome**.
-- For status=paused: the bullets describe **why it's paused** and
-  the last-known state.
-- For status=abandoned: 1–2 bullets max — what the project was
-  trying to do and why it was abandoned.
-- Drop superseded statements. If early notes said X but later
-  notes said "X turned out to be wrong, real story is Y", the
-  bullet is Y.
 
 ### `blockers` — open items
 
@@ -141,9 +129,9 @@ In addition to `new_block_body`, each block produces:
 - `search_terms` — natural-language phrases an agent might query
   for. Up to 10.
 
-These differ per block: the `where_we_are` summary describes
-"current state of X"; the `blockers` summary lists "open items
-on X"; etc.
+These differ per block: the `blockers` summary lists "open items
+on X"; the `recent_updates` summary captures "what's happened
+recently on X"; etc.
 
 ## Output rules
 
@@ -151,7 +139,7 @@ on X"; etc.
 - Each `new_block_body` MUST start with `## ` heading + the
   `<!-- brain:block ... -->` comment line, using the block_id from
   `input.block_ids[<section>]`.
-- Keep `where_we_are`, `blockers`, `artifacts` under 600 words each.
+- Keep `blockers` and `artifacts` under 600 words each.
   `recent_updates` may be longer if the timeline warrants.
 - **No marketing voice, no emoji, no closing summaries.**
 
@@ -166,5 +154,5 @@ on X"; etc.
 - **Be thorough.** This is a one-time legacy import. Bjorn wants
   nothing important to fall between cracks. If a draft, note, or
   commit message contains a real decision or finding, it should
-  surface in `recent_updates` (and possibly in `where_we_are` if
-  it changed the project's state).
+  surface in `recent_updates`. If it's an unresolved open item,
+  it surfaces in `blockers`.

@@ -10,6 +10,7 @@ import { resolve } from "node:path";
 import { vaultPaths } from "../lib/vault.js";
 import { parseDoc } from "../lib/frontmatter.js";
 import { loadConfig } from "../lib/config.js";
+import { appendOpLog } from "../lib/log.js";
 import {
   ensureProjectPage,
   appendToProjectPage,
@@ -345,11 +346,30 @@ export function gatherSynthesizableTasks(
  * for any block the parent could not synthesize.
  */
 export function applySynthesisResults(
-  pending: PendingSynthesisTask[],
+  pendingAll: PendingSynthesisTask[],
   results: Array<{ block_id: string; output: SynthesisOutput; prompt_sha256?: string; duration_ms?: number }>,
   unresolved: Array<{ block_id: string; reason: string }> = [],
 ): ApplyResult {
   const v = vaultPaths();
+  // PLAN_v3 delta #15 retired `where_we_are` as a stored block. Plans
+  // persisted under `.brain/state/synthesis-plans/` before that change
+  // may still carry tasks targeting it; drop them at apply time rather
+  // than letting them sit as orphans. The lint sweep clears stale
+  // plans >24h old, but a fresh plan from <24h ago can still leak
+  // through. Their captures stay in `captures/` (the per-task rename
+  // to `processed/` below only runs for tasks that survive the
+  // filter), so the next consolidate pass re-routes them through the
+  // current CAPTURE_TO_SECTION map (`state_change` → `recent-updates`).
+  const pending = pendingAll.filter(
+    (t) => (t.section_kind as string) !== "where_we_are",
+  );
+  const droppedLegacy = pendingAll.length - pending.length;
+  if (droppedLegacy > 0) {
+    appendOpLog(
+      "librarian",
+      `apply-synthesis: dropped ${droppedLegacy} legacy where_we_are task(s) from plan; their captures remain in captures/ for the next consolidate pass`,
+    );
+  }
   const byBlockResult = new Map(results.map((r) => [r.block_id, r]));
   const unresolvedSet = new Set(unresolved.map((u) => u.block_id));
   const unresolvedReasons = new Map(unresolved.map((u) => [u.block_id, u.reason]));
@@ -540,7 +560,6 @@ export async function consolidate(
           tasks.map((t) => [t.section_kind, t.block_id]),
         );
         for (const sectionKey of [
-          "where_we_are",
           "blockers",
           "recent_updates",
           "artifacts",
@@ -640,14 +659,12 @@ function reconstructFullPageImportInput(
     tasks.map((t) => [t.section_kind, t.block_id]),
   );
   const blockIds = {
-    where_we_are: blockByKind.get("where_we_are") ?? projectBlockId(projectSlug, "where-we-are"),
     blockers: blockByKind.get("blockers") ?? projectBlockId(projectSlug, "blockers"),
     recent_updates: blockByKind.get("recent_updates") ?? projectBlockId(projectSlug, "recent-updates"),
     artifacts: blockByKind.get("artifacts") ?? projectBlockId(projectSlug, "artifacts"),
   };
 
   const currentBlockBodies = {
-    where_we_are: readBlockBody(pageBody, blockIds.where_we_are) ?? "",
     blockers: readBlockBody(pageBody, blockIds.blockers) ?? "",
     recent_updates: readBlockBody(pageBody, blockIds.recent_updates) ?? "",
     artifacts: readBlockBody(pageBody, blockIds.artifacts) ?? "",

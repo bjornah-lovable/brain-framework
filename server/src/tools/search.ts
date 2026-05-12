@@ -13,6 +13,12 @@ import {
   type InvestigatorDossier,
   investigatorPromptSha256,
 } from "../lib/search/investigator.js";
+import {
+  buildWhereWeAreCandidates,
+  projectLastTouchedMs,
+  projectPageContentSha256,
+  readWhereWeAreCache,
+} from "../lib/search/where-we-are.js";
 import { preferHeadlessForMcp } from "../librarian/consolidate.js";
 import { appendOpLog } from "../lib/log.js";
 import {
@@ -136,12 +142,22 @@ export async function brainSearch(input: {
       : (["projects", "feed", "knowledge", "captures"] as const);
 
   const maxCandidates = depth === "deep" ? maxSources * 4 : maxSources * 2;
-  const candidates = generateCandidates({
-    query: input.query,
-    scope,
-    project_slug: input.project_slug,
-    max_candidates: maxCandidates,
-  });
+  // intent=where_are_we with a project_slug switches to a dedicated
+  // candidate set: the project page + recent processed captures. No
+  // FTS5; the question is "what's the state of project X?", not a
+  // free-text search. PLAN_v3 delta #15.
+  const whereWeAreMode =
+    input.intent === "where_are_we" &&
+    typeof input.project_slug === "string" &&
+    input.project_slug.length > 0;
+  const candidates = whereWeAreMode
+    ? buildWhereWeAreCandidates(input.project_slug!)
+    : generateCandidates({
+        query: input.query,
+        scope,
+        project_slug: input.project_slug,
+        max_candidates: maxCandidates,
+      });
 
   const queryFingerprint = createHash("sha256")
     .update(
@@ -246,6 +262,69 @@ export async function brainSearch(input: {
     max_sources: maxSources,
     candidates,
   });
+
+  // Where-we-are cache lookup: keyed on (project_slug, page content
+  // sha256, prompt sha). Cache hits return the prior dossier verbatim
+  // with no LLM dispatch. Invalidates on any real content change to
+  // the project page (inode-only mtime bumps from git checkout or
+  // backups don't cause spurious misses) AND after a 7-day TTL.
+  //
+  // The dispatch-time snapshot of (mtime, content sha) is stored in
+  // the search trace so finalize re-uses the same key it would have
+  // matched on. If the project page is updated between dispatch and
+  // finalize, the cache key is still the snapshot the LLM saw,
+  // ensuring stale answers can't be cached against a newer page state.
+  const dispatchMtimeMs = whereWeAreMode
+    ? projectLastTouchedMs(input.project_slug!)
+    : 0;
+  const dispatchContentSha = whereWeAreMode
+    ? projectPageContentSha256(input.project_slug!)
+    : "";
+
+  if (whereWeAreMode) {
+    const cached = readWhereWeAreCache(
+      input.project_slug!,
+      dispatchContentSha,
+      promptSha,
+    );
+    if (cached && typeof cached.dossier === "object" && cached.dossier !== null) {
+      const cachedDossier = cached.dossier as Partial<SearchDossier>;
+      const finalDossier: SearchDossier = {
+        search_id: searchId,
+        query: input.query,
+        query_interpretation: cachedDossier.query_interpretation,
+        answer: cachedDossier.answer ?? null,
+        confidence: cachedDossier.confidence ?? "medium",
+        depth,
+        sources: cachedDossier.sources ?? [],
+        suggested_reads: cachedDossier.suggested_reads ?? [],
+        open_questions: cachedDossier.open_questions ?? [],
+        diagnostics: {
+          candidates_considered: candidates.length,
+          investigator_status: "cache_hit",
+          duration_ms: Date.now() - start,
+          model: undefined,
+        },
+      };
+      persistTrace({
+        searchId,
+        input,
+        scope: scope as readonly string[],
+        candidates,
+        finalDossier,
+        queryFingerprint,
+        promptSha,
+        investigator: {
+          status: "cache_hit",
+          flags: undefined,
+          model: undefined,
+          dispatch_mode: "where_we_are_cache",
+        },
+      });
+      return { kind: "dossier", dossier: finalDossier };
+    }
+  }
+
   const fallback = fastDossierFromCandidates(candidates, maxSources, input.query);
   const fallbackDossier: SearchDossier = {
     search_id: searchId,
@@ -278,6 +357,13 @@ export async function brainSearch(input: {
       model: undefined,
       dispatch_mode: "parent_task",
     },
+    whereWeAreSnapshot: whereWeAreMode
+      ? {
+          project_slug: input.project_slug!,
+          dispatch_page_mtime_ms: dispatchMtimeMs,
+          dispatch_page_content_sha256: dispatchContentSha,
+        }
+      : undefined,
   });
   return {
     kind: "pending_dispatch",
@@ -315,12 +401,21 @@ function persistTrace(args: {
     model?: string;
     dispatch_mode?: string;
   };
+  /** Snapshot of the project page state at dispatch time. Only set
+   *  for where_are_we dispatches; lets finalize cache the dossier
+   *  under the page state the LLM actually saw, even if the page is
+   *  updated between dispatch and finalize. */
+  whereWeAreSnapshot?: {
+    project_slug: string;
+    dispatch_page_mtime_ms: number;
+    dispatch_page_content_sha256: string;
+  };
 }): void {
   const v = vaultPaths();
   try {
     mkdirSync(v.searchRuns, { recursive: true });
     const path = resolve(v.searchRuns, `${args.searchId}.json`);
-    const trace = {
+    const trace: Record<string, unknown> = {
       search_id: args.searchId,
       query_fingerprint: args.queryFingerprint,
       input: args.input,
@@ -335,6 +430,9 @@ function persistTrace(args: {
       },
       investigator: args.investigator,
     };
+    if (args.whereWeAreSnapshot) {
+      trace["where_we_are_snapshot"] = args.whereWeAreSnapshot;
+    }
     writeFileSync(path, JSON.stringify(trace, null, 2), "utf8");
     appendOpLog(
       "search",

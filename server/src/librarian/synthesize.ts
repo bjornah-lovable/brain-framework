@@ -27,11 +27,7 @@ export interface CaptureToPromote {
 export interface SynthesizeInput {
   project_slug: string;
   block_id: string;
-  section_kind:
-    | "where_we_are"
-    | "blockers"
-    | "recent_updates"
-    | "artifacts";
+  section_kind: "blockers" | "recent_updates" | "artifacts";
   current_block_body: string;
   captures_to_promote: CaptureToPromote[];
   previous_metadata?: {
@@ -185,19 +181,16 @@ export interface FullPageImportInput {
   project_slug: string;
   project_status: "active" | "paused" | "done" | "abandoned";
   block_ids: {
-    where_we_are: string;
     blockers: string;
     recent_updates: string;
     artifacts: string;
   };
   current_block_bodies: {
-    where_we_are: string;
     blockers: string;
     recent_updates: string;
     artifacts: string;
   };
   previous_metadata?: {
-    where_we_are?: SynthesisOutput;
     blockers?: SynthesisOutput;
     recent_updates?: SynthesisOutput;
     artifacts?: SynthesisOutput;
@@ -211,7 +204,6 @@ export interface FullPageImportInput {
 }
 
 export interface FullPageImportOutput {
-  where_we_are: SynthesisOutput;
   blockers: SynthesisOutput;
   recent_updates: SynthesisOutput;
   artifacts: SynthesisOutput;
@@ -236,7 +228,7 @@ export function looksLikeFullPageImportOutput(
 ): x is FullPageImportOutput {
   if (typeof x !== "object" || x === null) return false;
   const o = x as Record<string, unknown>;
-  for (const key of ["where_we_are", "blockers", "recent_updates", "artifacts"]) {
+  for (const key of ["blockers", "recent_updates", "artifacts"]) {
     if (!looksLikeSynthesisOutput(o[key])) return false;
   }
   return true;
