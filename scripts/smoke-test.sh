@@ -886,6 +886,110 @@ grep -q "chatty" "${SESSIONS_LOG}" || { echo "  FAIL: chatty session was wrongly
 ! grep -q "old-only" "${SESSIONS_LOG}" || { echo "  FAIL: old-only session was wrongly preserved"; exit 1; }
 echo "  lint sweep OK"
 
+echo "--- 28. brain-librarian lint sweeps truncated fallback bullets ---"
+# Fixture page with truncated-fallback bullets that MUST be removed,
+# clean bullets that MUST remain, plus adversarial "false-positive
+# guard" bullets that match shapes the heuristic could mis-flag if it
+# weren't anchored to the fallback-bullet fingerprint.
+TRUNC_PAGE="${VAULT}/projects/lint-trunc-fixture.md"
+mkdir -p "${VAULT}/projects"
+cat > "${TRUNC_PAGE}" <<'EOF'
+---
+slug: lint-trunc-fixture
+last_touched: '2026-05-12T00:00:00.000Z'
+status: active
+---
+# Lint trunc fixture
+
+## Where we are
+<!-- brain:block project.lint-trunc-fixture.where-we-are.v1 -->
+
+_(no entries yet)_
+
+## Open blockers / next actions
+<!-- brain:block project.lint-trunc-fixture.blockers.v1 -->
+
+_(no entries yet)_
+
+## Recent updates
+<!-- brain:block project.lint-trunc-fixture.recent-updates.v1 -->
+
+- 2026-05-12 — Clean bullet with a `**bold**` inline run and a terminal period.
+- 2026-05-12 — **v1 (`pivot-prompt-only`) has been conclusively shown to NOT work in
+- 2026-05-12 — **Tier-1 offline eval (stk-050) is no longer the operative read.** The
+- 2026-05-12 — Another clean bullet, closed and complete.
+- 2026-05-13 — Hand-written bullet ending in "the" without the fingerprint prefix the
+- 2026-05-14 — Math notation: cost scales as N**2 for large N.
+- 2026-05-15 — Bullet with backslash-bold literal \\**critical**: don't use backslash literals on Windows.
+- 2026-05-16 — Mid-line code `state is` should not flag the bullet to
+- 2026-05-17 — **Closed-bold legitimate bullet with no trailing dangle.**
+
+## Artifacts
+<!-- brain:block project.lint-trunc-fixture.artifacts.v1 -->
+
+_(no entries yet)_
+EOF
+LINT_OUT2="$(BRAIN_VAULT_ROOT="${VAULT}" \
+  "${NODE}" "${ROOT}/server/dist/librarian/cli.js" lint)"
+echo "  ${LINT_OUT2}"
+echo "${LINT_OUT2}" | jq -e '
+  .pages_touched == 1
+  and .truncated_bullets_removed == 2
+  and .errors == 0
+' >/dev/null || { echo "  FAIL: counters off"; exit 1; }
+# Both removable bullets must be gone.
+! grep -q "shown to NOT work in$" "${TRUNC_PAGE}" || { echo "  FAIL: unclosed-bold bullet still on page"; exit 1; }
+! grep -q "operative read.\*\* The$" "${TRUNC_PAGE}" || { echo "  FAIL: dangling-word bullet still on page"; exit 1; }
+# Every clean / adversarial bullet MUST remain — false positives here are
+# the failure mode the design is most paranoid about.
+for needle in \
+  "Clean bullet with a" \
+  "Another clean bullet" \
+  "Hand-written bullet ending in" \
+  "Math notation: cost scales" \
+  "backslash literals on Windows" \
+  "Mid-line code" \
+  "Closed-bold legitimate bullet"; do
+  grep -qF "${needle}" "${TRUNC_PAGE}" || { echo "  FAIL: false-positive deletion of legitimate bullet: '${needle}'"; exit 1; }
+done
+# Needs-review audit file must exist and contain both removed bullets.
+AUDIT=$(/bin/ls "${VAULT}/.brain/needs-review/"truncated-bullets-*-lint-trunc-fixture.md 2>/dev/null | head -1)
+[[ -n "${AUDIT}" ]] || { echo "  FAIL: audit file not written"; exit 1; }
+grep -q "shown to NOT work in" "${AUDIT}" || { echo "  FAIL: audit missing unclosed-bold bullet"; exit 1; }
+grep -q "operative read" "${AUDIT}" || { echo "  FAIL: audit missing dangling-word bullet"; exit 1; }
+# Structural invariants: rewrite must preserve frontmatter + every
+# block marker. A bug in slice offsets or stringifyDoc that mangles
+# structure (drops frontmatter, removes a marker) would still pass the
+# substring assertions above — these guards catch that class.
+grep -q "^slug: lint-trunc-fixture$" "${TRUNC_PAGE}" || { echo "  FAIL: frontmatter lost"; exit 1; }
+MARKER_COUNT=$(grep -c "<!-- brain:block project.lint-trunc-fixture" "${TRUNC_PAGE}")
+[[ "${MARKER_COUNT}" == "4" ]] || { echo "  FAIL: block markers lost (found ${MARKER_COUNT}/4)"; exit 1; }
+# Rewrite must have updated last_touched. Tolerant of YAML quote style.
+LAST_TOUCHED_LINE=$(grep "^last_touched:" "${TRUNC_PAGE}")
+echo "${LAST_TOUCHED_LINE}" | grep -q "2026-05-12T00:00:00" \
+  && { echo "  FAIL: last_touched still at fixture value: ${LAST_TOUCHED_LINE}"; exit 1; }
+# Re-run is a no-op (idempotent).
+LINT_OUT3="$(BRAIN_VAULT_ROOT="${VAULT}" \
+  "${NODE}" "${ROOT}/server/dist/librarian/cli.js" lint)"
+echo "${LINT_OUT3}" | jq -e '.pages_touched == 0 and .truncated_bullets_removed == 0' >/dev/null \
+  || { echo "  FAIL: re-run wasn't idempotent"; exit 1; }
+# Orphan-tmp cleanup: drop a stale tmp into projects/, plus a "tricky"
+# page whose slug contains `.md.tmp.` literally, run lint, verify the
+# orphan is gone AND both legitimate pages survive.
+ORPHAN="${VAULT}/projects/lint-trunc-fixture.md.tmp.99999.1234567890.deadbeef"
+echo "stale tmp" > "${ORPHAN}"
+TRICKY_PAGE="${VAULT}/projects/notes.md.tmp.archive.md"
+echo "---
+slug: notes.md.tmp.archive
+---
+# Notes archive
+" > "${TRICKY_PAGE}"
+BRAIN_VAULT_ROOT="${VAULT}" "${NODE}" "${ROOT}/server/dist/librarian/cli.js" lint >/dev/null
+[[ ! -f "${ORPHAN}" ]] || { echo "  FAIL: orphan tmp not swept"; exit 1; }
+[[ -f "${TRUNC_PAGE}" ]] || { echo "  FAIL: fixture page wrongly unlinked"; exit 1; }
+[[ -f "${TRICKY_PAGE}" ]] || { echo "  FAIL: page with .md.tmp. in slug wrongly unlinked"; exit 1; }
+echo "  truncated-bullet cleanup OK"
+
 CAPTURE_POST_COUNT="$(/bin/ls "${VAULT}/captures" 2>/dev/null | wc -l | tr -d ' ')"
 echo "---"
 echo "captures: ${CAPTURE_PRE_COUNT} -> ${CAPTURE_POST_COUNT}"

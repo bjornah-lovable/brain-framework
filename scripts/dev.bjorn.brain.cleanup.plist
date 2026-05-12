@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.bjorn.brain.cleanup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/bjornah/brain/code/scripts/brain-node</string>
+        <string>/Users/bjornah/brain/code/server/dist/librarian/cli.js</string>
+        <string>lint</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>BRAIN_VAULT_ROOT</key>
+        <string>/Users/bjornah/brain</string>
+        <key>PATH</key>
+        <string>/Users/bjornah/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>11</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>16</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/bjornah/brain/.brain/log/launchd-cleanup.out</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/bjornah/brain/.brain/log/launchd-cleanup.err</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

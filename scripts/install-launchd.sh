@@ -43,8 +43,10 @@ install_one() {
 
 install_one "dev.bjorn.brain.capture"
 install_one "dev.bjorn.brain.synthesize"
+install_one "dev.bjorn.brain.cleanup"
 
 echo
 echo "schedule:"
+echo "  cleanup            11:00 + 16:00 local (lint: stale traces + truncated-fallback bullets)"
 echo "  capture worker     12:00 + 17:00 local (delta classifier per session)"
 echo "  synthesize         18:00 local daily   (Opus rewrite of affected blocks)"
