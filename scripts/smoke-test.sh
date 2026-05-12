@@ -1138,6 +1138,78 @@ echo "  cache pre-mutation sha=${CACHE_SHA:0:12}…  expected=${PRE_MUTATION_SHA
 
 echo "  where_are_we broker OK"
 
+echo "--- 30. sweep-legacy-where-we-are (one-shot, idempotent) ---"
+# Two project pages: one with substantive legacy content (must be
+# archived before deletion), one with the empty placeholder (must be
+# deleted without an audit file).
+SUB_PAGE="${VAULT}/projects/legacy-wwa-sub.md"
+EMPTY_PAGE="${VAULT}/projects/legacy-wwa-empty.md"
+mkdir -p "${VAULT}/projects"
+cat > "${SUB_PAGE}" <<'EOF'
+---
+slug: legacy-wwa-sub
+last_touched: '2026-05-01T00:00:00.000Z'
+status: active
+---
+# Legacy WWA sub
+
+## Where we are
+<!-- brain:block project.legacy-wwa-sub.where-we-are.v1 -->
+
+- Real legacy synthesised content that must be archived, not silently deleted.
+
+## Recent updates
+<!-- brain:block project.legacy-wwa-sub.recent-updates.v1 -->
+
+_(no entries yet)_
+EOF
+cat > "${EMPTY_PAGE}" <<'EOF'
+---
+slug: legacy-wwa-empty
+last_touched: '2026-05-01T00:00:00.000Z'
+status: active
+---
+# Legacy WWA empty
+
+## Where we are
+<!-- brain:block project.legacy-wwa-empty.where-we-are.v1 -->
+
+_(no entries yet)_
+
+## Recent updates
+<!-- brain:block project.legacy-wwa-empty.recent-updates.v1 -->
+
+_(no entries yet)_
+EOF
+SLW_OUT="$(BRAIN_VAULT_ROOT="${VAULT}" \
+  "${NODE}" "${ROOT}/server/dist/librarian/cli.js" sweep-legacy-where-we-are)"
+echo "  ${SLW_OUT}"
+# Other smoke steps may have left legacy where-we-are blocks on
+# fixture pages they created; assert this step's contribution rather
+# than absolute totals to keep the assertion order-independent.
+echo "${SLW_OUT}" | jq -e '
+  .blocks_removed >= 2
+  and .substantive_archived >= 1
+  and .empty_removed >= 1
+  and .errors == 0
+' >/dev/null || { echo "  FAIL: counters"; exit 1; }
+# Pages must no longer contain the marker.
+! grep -q "brain:block project.legacy-wwa-sub.where-we-are" "${SUB_PAGE}" || { echo "  FAIL: substantive block not removed"; exit 1; }
+! grep -q "brain:block project.legacy-wwa-empty.where-we-are" "${EMPTY_PAGE}" || { echo "  FAIL: empty block not removed"; exit 1; }
+# Recent updates section on both pages must still be present.
+grep -q "brain:block project.legacy-wwa-sub.recent-updates" "${SUB_PAGE}" || { echo "  FAIL: sub page recent-updates wiped"; exit 1; }
+grep -q "brain:block project.legacy-wwa-empty.recent-updates" "${EMPTY_PAGE}" || { echo "  FAIL: empty page recent-updates wiped"; exit 1; }
+# Audit file exists for the substantive page; NOT for the empty one.
+[[ -f "${VAULT}/.brain/needs-review/legacy-where-we-are/legacy-wwa-sub.md" ]] || { echo "  FAIL: substantive audit missing"; exit 1; }
+[[ ! -f "${VAULT}/.brain/needs-review/legacy-where-we-are/legacy-wwa-empty.md" ]] || { echo "  FAIL: empty page wrongly archived"; exit 1; }
+grep -q "Real legacy synthesised content" "${VAULT}/.brain/needs-review/legacy-where-we-are/legacy-wwa-sub.md" || { echo "  FAIL: audit content missing"; exit 1; }
+# Idempotency: re-run is a no-op.
+SLW_OUT2="$(BRAIN_VAULT_ROOT="${VAULT}" \
+  "${NODE}" "${ROOT}/server/dist/librarian/cli.js" sweep-legacy-where-we-are)"
+echo "${SLW_OUT2}" | jq -e '.blocks_removed == 0' >/dev/null \
+  || { echo "  FAIL: re-run wasn't idempotent"; exit 1; }
+echo "  legacy-where-we-are sweep OK"
+
 CAPTURE_POST_COUNT="$(/bin/ls "${VAULT}/captures" 2>/dev/null | wc -l | tr -d ' ')"
 echo "---"
 echo "captures: ${CAPTURE_PRE_COUNT} -> ${CAPTURE_POST_COUNT}"

@@ -27,10 +27,11 @@ import { importPointers } from "./import-pointers.js";
 import { brainLibrarianPlanImports } from "../tools/librarian-plan-imports.js";
 import { loadConfig } from "../lib/config.js";
 import { lint } from "./lint.js";
+import { sweepLegacyWhereWeAre } from "./legacy-sweep.js";
 
 function printUsage(): void {
   console.error(
-    "usage: brain-librarian <consolidate|plan-synthesis|apply-synthesis|capture|cost|import-pointers|plan-imports|apply-imports|status|lint|rollover|config-export> [...]",
+    "usage: brain-librarian <consolidate|plan-synthesis|apply-synthesis|capture|cost|import-pointers|plan-imports|apply-imports|status|lint|sweep-legacy-where-we-are|rollover|config-export> [...]",
   );
 }
 
@@ -294,6 +295,16 @@ async function main(): Promise<void> {
       const lock = acquireLibrarianLock({ waitMs });
       try {
         const result = lint();
+        console.log(JSON.stringify(result));
+      } finally {
+        lock.release();
+      }
+      return;
+    }
+    case "sweep-legacy-where-we-are": {
+      const lock = acquireLibrarianLock({ waitMs });
+      try {
+        const result = sweepLegacyWhereWeAre();
         console.log(JSON.stringify(result));
       } finally {
         lock.release();
