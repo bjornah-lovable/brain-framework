@@ -661,7 +661,10 @@ declare -a phase1_attempted=()
 phase1_already_attempted() {
   local needle="$1"
   local s
-  for s in "${phase1_attempted[@]}"; do
+  # `${arr[@]+"${arr[@]}"}` keeps `set -u` happy when the array is
+  # empty (macOS bash 3.2). Without it, an empty queue → empty array
+  # → unbound-variable crash before phase 2 can do anything.
+  for s in "${phase1_attempted[@]+"${phase1_attempted[@]}"}"; do
     [[ "${s}" == "${needle}" ]] && return 0
   done
   return 1
