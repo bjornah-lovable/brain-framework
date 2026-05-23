@@ -32,12 +32,24 @@
 
 set -uo pipefail
 
+queue_only=0
+for arg in "$@"; do
+  case "${arg}" in
+    --queue-only) queue_only=1 ;;
+  esac
+done
+
 VAULT_ROOT="${BRAIN_VAULT_ROOT:-${HOME}/brain}"
 LOG_DIR="${VAULT_ROOT}/.brain/log"
 STATE_DIR="${VAULT_ROOT}/.brain/state"
 PAUSED_FILE="${STATE_DIR}/paused"
 MARKERS_FILE="${STATE_DIR}/capture-markers.json"
+ERROR_COUNTS_FILE="${STATE_DIR}/capture-error-counts.json"
 QUEUE_FILE="${STATE_DIR}/capture-queue.jsonl"
+# After this many consecutive ERROR outcomes on the same session, write
+# a stub to .brain/needs-review/ and advance the marker past current_size.
+# Stops the marker-stuck infinite-retry bleed (1 retry, then quarantine).
+MAX_SESSION_RETRIES=1
 SETTINGS_BARE="${VAULT_ROOT}/.brain/settings-bare.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROMPT_FILE="${SCRIPT_DIR}/prompts/brain-capture-delta.md"
@@ -110,8 +122,10 @@ total_in_tokens=0
 total_out_tokens=0
 total_cache_read_tokens=0
 
-# Exported for the python heredocs in read_marker / write_marker.
+# Exported for the python heredocs in read_marker / write_marker /
+# read_error_count / write_error_count.
 export MARKERS_FILE
+export ERROR_COUNTS_FILE
 
 # ---- helpers --------------------------------------------------------
 
@@ -143,6 +157,85 @@ except Exception:
 d[sid] = off
 with open(path, "w") as f:
     json.dump(d, f)
+PY
+}
+
+# Per-session consecutive-error counter (bleed fix). Bounded retry so
+# a session whose classifier output we can't handle doesn't re-bill
+# every scan forever. Reset to 0 on any non-ERROR outcome.
+read_error_count() {
+  BRAIN_SESSION_ID="$1" /usr/bin/python3 - <<'PY'
+import json, os
+path = os.environ["ERROR_COUNTS_FILE"]
+sid = os.environ["BRAIN_SESSION_ID"]
+try:
+    with open(path) as f:
+        d = json.load(f)
+    print(int(d.get(sid, 0)))
+except Exception:
+    print(0)
+PY
+}
+
+write_error_count() {
+  BRAIN_SESSION_ID="$1" BRAIN_COUNT="$2" /usr/bin/python3 - <<'PY'
+import json, os
+path = os.environ["ERROR_COUNTS_FILE"]
+sid = os.environ["BRAIN_SESSION_ID"]
+n = int(os.environ["BRAIN_COUNT"])
+try:
+    with open(path) as f:
+        d = json.load(f)
+except Exception:
+    d = {}
+if n <= 0:
+    d.pop(sid, None)
+else:
+    d[sid] = n
+with open(path, "w") as f:
+    json.dump(d, f)
+PY
+}
+
+# Write a stub to .brain/needs-review/ recording the classifier
+# failure so the transcript can be salvaged later if needed. The
+# marker is advanced past current_size by the caller to stop the bleed.
+write_quarantine_stub() {
+  BRAIN_SID="$1" BRAIN_TRANSCRIPT="$2" BRAIN_MARKER="$3" BRAIN_CURRENT="$4" \
+  BRAIN_LAST_RAW="$5" BRAIN_VAULT="${VAULT_ROOT}" /usr/bin/python3 - <<'PY'
+import json, os
+from datetime import datetime, timezone
+vault = os.environ["BRAIN_VAULT"]
+sid = os.environ["BRAIN_SID"]
+target_dir = os.path.join(vault, ".brain", "needs-review")
+os.makedirs(target_dir, exist_ok=True)
+ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+out = os.path.join(target_dir, f"classifier-quarantine-{sid}.md")
+last_raw = os.environ.get("BRAIN_LAST_RAW","")[:1024]
+body = f"""---
+kind: classifier_quarantine
+session_id: {sid}
+transcript_path: {os.environ["BRAIN_TRANSCRIPT"]}
+marker_at_quarantine: {os.environ["BRAIN_MARKER"]}
+current_size_at_quarantine: {os.environ["BRAIN_CURRENT"]}
+quarantined_at: {ts}
+---
+
+# Classifier quarantine: {sid}
+
+The delta classifier produced unparseable or unknown output for this
+session more than the retry budget allowed. The marker has been
+advanced past `current_size` to stop the retry bleed. The transcript
+file is still on disk at `transcript_path` if salvage is wanted.
+
+## Last raw classifier output (truncated to 1KB)
+
+```
+{last_raw}
+```
+"""
+with open(out, "w") as f:
+    f.write(body)
 PY
 }
 
@@ -349,14 +442,54 @@ run_classifier() {
   return ${rc}
 }
 
+# Success path for any non-ERROR outcome: advance marker AND reset
+# the per-session consecutive-error counter.
+success_path() {
+  local session_id="$1"
+  local new_marker="$2"
+  write_marker "${session_id}" "${new_marker}"
+  write_error_count "${session_id}" 0
+}
+
+# Error path: increment the per-session consecutive-error counter.
+# If we've exceeded MAX_SESSION_RETRIES, write a quarantine stub to
+# .brain/needs-review/, advance the marker past current_size to stop
+# the bleed, and reset the counter. Otherwise leave the marker alone
+# (the next run retries).
+note_session_error() {
+  local session_id="$1"
+  local transcript_path="$2"
+  local marker_before="$3"
+  local current_size="$4"
+  local raw="$5"
+
+  local count
+  count=$(read_error_count "${session_id}")
+  count=$((count + 1))
+
+  if [[ "${count}" -gt "${MAX_SESSION_RETRIES}" ]]; then
+    write_quarantine_stub "${session_id}" "${transcript_path}" \
+      "${marker_before}" "${current_size}" "${raw}"
+    write_marker "${session_id}" "${current_size}"
+    write_error_count "${session_id}" 0
+    quarantined=$((quarantined + 1))
+  else
+    write_error_count "${session_id}" "${count}"
+    errors=$((errors + 1))
+  fi
+}
+
 # Apply a classifier outcome to one session: write the capture if any,
-# advance the marker if non-ERROR. Updates the global counters.
-# Usage: apply_outcome <classifier-raw-stdout> <session-id> <new-marker> <trigger>
+# advance the marker if non-ERROR, otherwise count toward the retry
+# budget and quarantine if exhausted. Updates the global counters.
+# Usage: apply_outcome <raw> <session-id> <new-marker> <trigger> <transcript-path> <marker-before>
 apply_outcome() {
   local raw="$1"
   local session_id="$2"
   local new_marker="$3"
   local trigger="$4"
+  local transcript_path="${5:-}"
+  local marker_before="${6:-0}"
 
   local outcome
   outcome="$(parse_field "${raw}" outcome)"
@@ -364,7 +497,7 @@ apply_outcome() {
   case "${outcome}" in
     NO_NEW_ACTIVITY|NO_RELEVANT_INFORMATION|ALREADY_CAPTURED)
       skipped=$((skipped + 1))
-      write_marker "${session_id}" "${new_marker}"
+      success_path "${session_id}" "${new_marker}"
       return 0
       ;;
     CAPTURE_CREATED|QUARANTINED)
@@ -377,7 +510,8 @@ apply_outcome() {
 
       if [[ -z "${body}" || -z "${slug}" ]]; then
         # Schema violation — body and slug are required for these outcomes.
-        errors=$((errors + 1))
+        note_session_error "${session_id}" "${transcript_path}" \
+          "${marker_before}" "${new_marker}" "${raw}"
         return 0
       fi
 
@@ -421,14 +555,16 @@ PY
         else
           created=$((created + 1))
         fi
-        write_marker "${session_id}" "${new_marker}"
+        success_path "${session_id}" "${new_marker}"
       else
-        errors=$((errors + 1))
+        note_session_error "${session_id}" "${transcript_path}" \
+          "${marker_before}" "${new_marker}" "${raw}"
       fi
       return 0
       ;;
     *)
-      errors=$((errors + 1))
+      note_session_error "${session_id}" "${transcript_path}" \
+        "${marker_before}" "${new_marker}" "${raw}"
       return 1
       ;;
   esac
@@ -496,19 +632,23 @@ if [[ -s "${QUEUE_FILE}" ]]; then
     ctx="$(BRAIN_CTX="${event}" /usr/bin/python3 -c "import json,os; print(json.dumps(json.loads(os.environ['BRAIN_CTX'])))")"
     raw="$(run_classifier "${transcript_path}" "${marker}" "${trigger}" "${ctx}" "${session_id}" "${current_size}")" || raw=""
     if [[ -z "${raw}" ]]; then
-      # Spawn / classifier failure — re-enqueue for next run.
-      echo "${event}" >> "${QUEUE_FILE}"
-      queue_errors=$((queue_errors + 1))
+      # Spawn / classifier failure — count toward the retry budget so
+      # repeated spawn-fails don't bleed forever via re-enqueue.
+      note_session_error "${session_id}" "${transcript_path}" \
+        "${marker}" "${current_size}" ""
       continue
     fi
     accumulate_cost "${raw}"
-    if ! apply_outcome "${raw}" "${session_id}" "${current_size}" "${trigger}"; then
-      echo "${event}" >> "${QUEUE_FILE}"
-      queue_errors=$((queue_errors + 1))
-    fi
+    apply_outcome "${raw}" "${session_id}" "${current_size}" "${trigger}" \
+      "${transcript_path}" "${marker}" || :
   done < "${queue_tmp}"
 
   /bin/rm -f "${queue_tmp}"
+fi
+
+if [[ "${queue_only}" == 1 ]]; then
+  echo "${ts}  trigger=worker  queue_only=1  queue_drained=${queue_drained}  queue_errors=${queue_errors}  created=${created}  skipped=${skipped}  quarantined=${quarantined}  errors=${errors}  cost_usd=${total_cost_usd}  in_tokens=${total_in_tokens}  out_tokens=${total_out_tokens}  cache_read_tokens=${total_cache_read_tokens}" >> "${log}"
+  exit 0
 fi
 
 # ---- phase 2: scheduled scan ---------------------------------------
@@ -544,11 +684,13 @@ for jsonl in "${CLAUDE_PROJECTS}"/*/*.jsonl; do
 
   raw="$(run_classifier "${jsonl}" "${marker}" "scheduled" '{"trigger":"scheduled"}' "${session_id}" "${current_size}")" || raw=""
   if [[ -z "${raw}" ]]; then
-    errors=$((errors + 1))
+    note_session_error "${session_id}" "${jsonl}" \
+      "${marker}" "${current_size}" ""
     continue
   fi
   accumulate_cost "${raw}"
-  apply_outcome "${raw}" "${session_id}" "${current_size}" "scheduled" || :
+  apply_outcome "${raw}" "${session_id}" "${current_size}" "scheduled" \
+    "${jsonl}" "${marker}" || :
 done
 
 echo "${ts}  trigger=worker  queue_drained=${queue_drained}  queue_errors=${queue_errors}  sessions_scanned=${sessions_scanned}  created=${created}  skipped=${skipped}  quarantined=${quarantined}  errors=${errors}  cost_usd=${total_cost_usd}  in_tokens=${total_in_tokens}  out_tokens=${total_out_tokens}  cache_read_tokens=${total_cache_read_tokens}" >> "${log}"
