@@ -19,11 +19,14 @@ stdin contains:
    each shown with its frontmatter and body excerpt. These are the
    ground truth on what's already captured — use them to avoid
    double-writing. May be `(no prior captures for this session)`.
-5. The literal text `TRANSCRIPT_DELTA:` followed by raw JSONL bytes
-   from the agent's session transcript (one or more `{"role": ...,
-   "content": ...}` records, possibly interleaved with `tool_use` and
-   `tool_result` records). The bytes are the *delta* since the last
-   classification — not the whole session.
+5. The literal text `TRANSCRIPT_DELTA:` followed by a filtered
+   conversation log: one block per turn, prefixed with `[user]:` or
+   `[assistant]:`, plain text, blocks separated by blank lines. Tool
+   calls, tool results, attachments, file-history snapshots, and
+   other non-conversation metadata have been stripped — only the
+   human-typed messages and the assistant's text replies are present.
+   The log covers the *delta* since the last classification — not
+   the whole session, so a turn may start or end mid-thought.
 
 ## Output
 

@@ -360,6 +360,87 @@ else:
 PY
 }
 
+# Filter raw Claude Code transcript JSONL down to just the conversation:
+# human-typed user messages and assistant text replies. Tool calls,
+# tool results, attachments, file-history snapshots, custom-title /
+# agent-name / permission-mode metadata records, and any other non-text
+# record types are dropped. Stdin: raw JSONL bytes. Stdout: plain
+# text blocks prefixed with "[user]:" / "[assistant]:" separated by
+# blank lines.
+#
+# Why: the classifier only needs the conversation to decide what to
+# capture. Sending raw JSONL with tool noise wastes tokens AND tends
+# to push the model into off-schema output (probable cause:
+# instruction-shaped content in tool results competing with the
+# classifier prompt).
+filter_transcript_to_conversation() {
+  /usr/bin/python3 - <<'PY'
+import json, sys
+
+# User content that's just a wrapped tooling tag — Claude Code's
+# !-shell-command artefacts, system reminders, slash-command names,
+# task notifications, hook output — isn't a human message. Keeping
+# these confuses the classifier (it tries to respond to the most
+# recent tag instead of producing the schema JSON).
+TOOLING_TAG_PREFIXES = (
+    "<bash-input>", "<bash-stdout>", "<bash-stderr>",
+    "<system-reminder>", "<local-command-caveat>",
+    "<command-name>", "<command-message>", "<command-args>",
+    "<task-notification>",
+)
+
+def is_tooling_string(s):
+    s = s.lstrip()
+    return any(s.startswith(p) for p in TOOLING_TAG_PREFIXES)
+
+def collect_texts(content, drop_tooling=False):
+    """Return a list of text strings from a message.content value.
+    If drop_tooling=True (user records), skip strings that are
+    just wrapped Claude-Code tooling tags."""
+    out = []
+    if isinstance(content, str):
+        if content.strip() and not (drop_tooling and is_tooling_string(content)):
+            out.append(content)
+    elif isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                t = item.get("text", "")
+                if isinstance(t, str) and t.strip() and not (drop_tooling and is_tooling_string(t)):
+                    out.append(t)
+    return out
+
+# Read stdin as bytes so a tail-cut that lands inside a multi-byte
+# UTF-8 character doesn't crash the filter. Decode each line
+# individually with replacement; unparseable lines (partial first
+# line after the cut, malformed records) are skipped silently.
+raw = sys.stdin.buffer.read()
+for line_bytes in raw.split(b"\n"):
+    try:
+        line = line_bytes.decode("utf-8", errors="replace").strip()
+    except Exception:
+        continue
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    t = d.get("type", "")
+    if t not in ("user", "assistant"):
+        continue
+    msg = d.get("message")
+    if not isinstance(msg, dict):
+        continue
+    texts = collect_texts(msg.get("content"), drop_tooling=(t == "user"))
+    if not texts:
+        # type=user with only tool_result / tooling tags, or assistant
+        # with only tool_use / thinking, etc.
+        continue
+    print(f"[{t}]: " + "\n".join(s.strip() for s in texts))
+    print()
+PY
+}
+
 # Run the classifier against a JSONL tail. Prints raw classifier
 # stdout to stdout. Returns non-zero on spawn failure.
 # Usage: run_classifier <jsonl-path> <marker-offset> <trigger> <ctx-json> <session-id>
@@ -421,8 +502,10 @@ run_classifier() {
     # Bound output to delta_size bytes. If the file grows between
     # the caller's stat and tail-execution, those extra bytes don't
     # leak into the classifier — the next run picks them up.
+    # The filter strips tool noise / metadata records so the classifier
+    # only sees the conversation (see filter_transcript_to_conversation).
     if [[ "${delta_size}" -gt 0 ]]; then
-      /usr/bin/tail -c "+${start_offset}" "${jsonl}" | /usr/bin/head -c "${delta_size}"
+      /usr/bin/tail -c "+${start_offset}" "${jsonl}" | /usr/bin/head -c "${delta_size}" | filter_transcript_to_conversation
     fi
   } | BRAIN_INTERNAL=1 "${CLAUDE_BIN}" \
       --bare \
