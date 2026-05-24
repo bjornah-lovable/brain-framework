@@ -48,8 +48,15 @@ ERROR_COUNTS_FILE="${STATE_DIR}/capture-error-counts.json"
 QUEUE_FILE="${STATE_DIR}/capture-queue.jsonl"
 # After this many consecutive ERROR outcomes on the same session, write
 # a stub to .brain/needs-review/ and advance the marker past current_size.
-# Stops the marker-stuck infinite-retry bleed (1 retry, then quarantine).
-MAX_SESSION_RETRIES=1
+# Stops the marker-stuck infinite-retry bleed. Different thresholds for
+# semantic errors (deterministic — model can't handle this input → fail
+# fast) vs spawn-empty errors (transient — Anthropic rate-limited or
+# claude --bare exited silently → retry liberally across scans).
+MAX_SESSION_RETRIES=1          # for unknown_outcome, missing_body_slug, librarian_cli_fail
+MAX_SPAWN_EMPTY_RETRIES=5      # for spawn_empty (transient infrastructure)
+# In-dispatch retries before counting toward the per-session budget.
+# Handles micro-burst rate limits without burning the session's retry quota.
+MAX_DISPATCH_ATTEMPTS=2
 SETTINGS_BARE="${VAULT_ROOT}/.brain/settings-bare.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROMPT_FILE="${SCRIPT_DIR}/prompts/brain-capture-delta.md"
@@ -484,6 +491,12 @@ run_classifier() {
     truncation_note="[NOTE: transcript delta is ${delta_size} bytes; truncated to last ${DELTA_MAX_INPUT_BYTES} bytes for classifier. Older session content is not visible to this classification.]"
   fi
 
+  # Materialize the prompt once so we can replay it on transient
+  # spawn-empty failures without re-running the filter pipeline.
+  local prompt_tmp out_tmp err_tmp
+  prompt_tmp=$(/usr/bin/mktemp -t brain-prompt) || return 1
+  out_tmp=$(/usr/bin/mktemp -t brain-out) || { /bin/rm -f "${prompt_tmp}"; return 1; }
+  err_tmp=$(/usr/bin/mktemp -t brain-err) || { /bin/rm -f "${prompt_tmp}" "${out_tmp}"; return 1; }
   {
     /bin/cat "${PROMPT_FILE}"
     echo
@@ -499,15 +512,23 @@ run_classifier() {
     recent_captures_preamble "${session_id}"
     echo
     echo "TRANSCRIPT_DELTA:"
-    # Bound output to delta_size bytes. If the file grows between
-    # the caller's stat and tail-execution, those extra bytes don't
-    # leak into the classifier — the next run picks them up.
-    # The filter strips tool noise / metadata records so the classifier
-    # only sees the conversation (see filter_transcript_to_conversation).
+    # Bound output to delta_size bytes. The filter strips tool noise
+    # / metadata records so the classifier only sees the conversation
+    # (see filter_transcript_to_conversation).
     if [[ "${delta_size}" -gt 0 ]]; then
       /usr/bin/tail -c "+${start_offset}" "${jsonl}" | /usr/bin/head -c "${delta_size}" | filter_transcript_to_conversation
     fi
-  } | BRAIN_INTERNAL=1 "${CLAUDE_BIN}" \
+  } > "${prompt_tmp}"
+
+  # Try up to MAX_DISPATCH_ATTEMPTS times. claude --bare sometimes exits
+  # with empty stdout AND empty stderr under rate-limit / transient
+  # bursts — observed in the 2026-05-24 scan, 26 such failures in 3 min.
+  # Sleep 1s between attempts.
+  local attempt=1 rc=0
+  while [[ "${attempt}" -le "${MAX_DISPATCH_ATTEMPTS}" ]]; do
+    : > "${out_tmp}"
+    : > "${err_tmp}"
+    BRAIN_INTERNAL=1 "${CLAUDE_BIN}" \
       --bare \
       -p \
       --model "${DELTA_MODEL}" \
@@ -517,12 +538,35 @@ run_classifier() {
       --max-budget-usd "${DELTA_MAX_BUDGET_USD}" \
       --output-format json \
       "${schema_args[@]+"${schema_args[@]}"}" \
-      "${settings_args[@]+"${settings_args[@]}"}" 2> >(/usr/bin/tee -a "${LOG_DIR}/spawn-errors-$(date +%Y-%m-%d).log" >&2)
-  local rc=$?
-  # rc !=0 here is informational — the parent already treats empty
-  # stdout as a spawn failure. We just want a breadcrumb in the log
-  # when stderr was non-empty (e.g. "command not found", auth fail).
-  return ${rc}
+      "${settings_args[@]+"${settings_args[@]}"}" \
+      < "${prompt_tmp}" > "${out_tmp}" 2> "${err_tmp}"
+    rc=$?
+    if [[ -s "${out_tmp}" ]]; then
+      break
+    fi
+    # Empty stdout — record what we know for diagnosis, then retry.
+    {
+      printf '%s  session=%s attempt=%d rc=%d stdout=0 stderr_bytes=%d\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "${session_id}" \
+        "${attempt}" \
+        "${rc}" \
+        "$(/usr/bin/stat -f%z "${err_tmp}" 2>/dev/null || echo 0)"
+      if [[ -s "${err_tmp}" ]]; then
+        echo "--- stderr ---"
+        /bin/cat "${err_tmp}"
+        echo "--- /stderr ---"
+      fi
+    } >> "${LOG_DIR}/spawn-errors-$(date +%Y-%m-%d).log"
+    attempt=$((attempt + 1))
+    if [[ "${attempt}" -le "${MAX_DISPATCH_ATTEMPTS}" ]]; then
+      /bin/sleep 1
+    fi
+  done
+
+  /bin/cat "${out_tmp}"
+  /bin/rm -f "${prompt_tmp}" "${out_tmp}" "${err_tmp}"
+  return "${rc}"
 }
 
 # Success path for any non-ERROR outcome: advance marker AND reset
@@ -539,18 +583,80 @@ success_path() {
 # .brain/needs-review/, advance the marker past current_size to stop
 # the bleed, and reset the counter. Otherwise leave the marker alone
 # (the next run retries).
+#
+# Writes a structured diagnostic line to
+# .brain/log/classifier-errors-YYYY-MM-DD.log so we can later analyse
+# which failure mode is firing. err_type is one of:
+#   spawn_empty           — claude --bare returned no stdout at all
+#   unknown_outcome       — outcome field empty or unrecognised
+#   missing_body_slug     — outcome=CAPTURE_CREATED|QUARANTINED but body/slug empty
+#   librarian_cli_fail    — librarian capture CLI returned non-zero
 note_session_error() {
   local session_id="$1"
   local transcript_path="$2"
   local marker_before="$3"
   local current_size="$4"
   local raw="$5"
+  local err_type="${6:-unspecified}"
 
-  local count
+  BRAIN_SID="${session_id}" BRAIN_ERR="${err_type}" BRAIN_RAW="${raw}" \
+  BRAIN_LOG="${LOG_DIR}/classifier-errors-$(date +%Y-%m-%d).log" \
+  /usr/bin/python3 - <<'PY' 2>/dev/null || true
+import json, os, re
+from datetime import datetime, timezone
+raw = os.environ.get("BRAIN_RAW", "")
+out = {
+  "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+  "session": os.environ["BRAIN_SID"],
+  "err_type": os.environ["BRAIN_ERR"],
+  "raw_len": len(raw),
+}
+# Try to extract result + parsed outcome
+try:
+    env = json.loads(raw) if raw else {}
+except Exception:
+    env = {}
+out["envelope_subtype"] = env.get("subtype") if isinstance(env, dict) else None
+out["envelope_terminal_reason"] = env.get("terminal_reason") if isinstance(env, dict) else None
+out["envelope_stop_reason"] = env.get("stop_reason") if isinstance(env, dict) else None
+out["envelope_cost"] = env.get("total_cost_usd") if isinstance(env, dict) else None
+result = env.get("result", "") if isinstance(env, dict) else ""
+out["result_len"] = len(result) if isinstance(result, str) else 0
+out["result_first_300"] = (result[:300] if isinstance(result, str) else str(result)[:300])
+# Try to parse the inner JSON
+if isinstance(result, str) and result.strip():
+    s = result.strip()
+    m = re.match(r"^```[a-zA-Z0-9_-]*\s*\n([\s\S]*?)\n```$", s)
+    if m: s = m.group(1).strip()
+    try:
+        p = json.loads(s)
+        if isinstance(p, dict):
+            out["parsed_outcome"] = p.get("outcome")
+            out["parsed_body_len"] = len(p.get("body") or "") if isinstance(p.get("body"), str) else 0
+            out["parsed_slug"] = p.get("project_slug")
+            out["parsed_kind"] = p.get("capture_kind")
+            out["parsed_confidence_type"] = type(p.get("confidence")).__name__
+            out["parsed_importance"] = p.get("importance")
+    except Exception as e:
+        out["inner_parse_error"] = str(e)[:120]
+with open(os.environ["BRAIN_LOG"], "a") as f:
+    f.write(json.dumps(out) + "\n")
+PY
+
+  local count threshold
   count=$(read_error_count "${session_id}")
   count=$((count + 1))
 
-  if [[ "${count}" -gt "${MAX_SESSION_RETRIES}" ]]; then
+  # spawn_empty is transient infra (rate limit, silent CLI exit); allow
+  # many cross-scan retries before quarantining. Semantic errors are
+  # deterministic — fail fast.
+  if [[ "${err_type}" == "spawn_empty" ]]; then
+    threshold="${MAX_SPAWN_EMPTY_RETRIES}"
+  else
+    threshold="${MAX_SESSION_RETRIES}"
+  fi
+
+  if [[ "${count}" -gt "${threshold}" ]]; then
     write_quarantine_stub "${session_id}" "${transcript_path}" \
       "${marker_before}" "${current_size}" "${raw}"
     write_marker "${session_id}" "${current_size}"
@@ -594,7 +700,7 @@ apply_outcome() {
       if [[ -z "${body}" || -z "${slug}" ]]; then
         # Schema violation — body and slug are required for these outcomes.
         note_session_error "${session_id}" "${transcript_path}" \
-          "${marker_before}" "${new_marker}" "${raw}"
+          "${marker_before}" "${new_marker}" "${raw}" "missing_body_slug"
         return 0
       fi
 
@@ -641,13 +747,13 @@ PY
         success_path "${session_id}" "${new_marker}"
       else
         note_session_error "${session_id}" "${transcript_path}" \
-          "${marker_before}" "${new_marker}" "${raw}"
+          "${marker_before}" "${new_marker}" "${raw}" "librarian_cli_fail"
       fi
       return 0
       ;;
     *)
       note_session_error "${session_id}" "${transcript_path}" \
-        "${marker_before}" "${new_marker}" "${raw}"
+        "${marker_before}" "${new_marker}" "${raw}" "unknown_outcome"
       return 1
       ;;
   esac
@@ -721,7 +827,7 @@ if [[ -s "${QUEUE_FILE}" ]]; then
       # Spawn / classifier failure — count toward the retry budget so
       # repeated spawn-fails don't bleed forever via re-enqueue.
       note_session_error "${session_id}" "${transcript_path}" \
-        "${marker}" "${current_size}" ""
+        "${marker}" "${current_size}" "" "spawn_empty"
       continue
     fi
     accumulate_cost "${raw}"
@@ -771,7 +877,7 @@ for jsonl in "${CLAUDE_PROJECTS}"/*/*.jsonl; do
   raw="$(run_classifier "${jsonl}" "${marker}" "scheduled" '{"trigger":"scheduled"}' "${session_id}" "${current_size}")" || raw=""
   if [[ -z "${raw}" ]]; then
     note_session_error "${session_id}" "${jsonl}" \
-      "${marker}" "${current_size}" ""
+      "${marker}" "${current_size}" "" "spawn_empty"
     continue
   fi
   accumulate_cost "${raw}"
