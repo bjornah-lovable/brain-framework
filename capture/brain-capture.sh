@@ -81,8 +81,17 @@ if config_lines="$("${NODE_BIN}" "${LIBRARIAN_CLI}" config-export 2>/dev/null)";
 fi
 
 DELTA_MODEL="${BRAIN_DELTA_CLASSIFIER_MODEL:-claude-sonnet-4-6}"
-DELTA_MAX_BUDGET_USD="${BRAIN_DELTA_CLASSIFIER_MAX_BUDGET_USD:-0.30}"
-DELTA_MAX_INPUT_BYTES="${BRAIN_DELTA_MAX_INPUT_BYTES:-524288}"
+# Fallbacks (used only if config-export fails) match config.yaml and must
+# stay mutually affordable: a dispatch at the input cap completes under the
+# budget. 96 KB filtered ≈ $0.15/call; $0.40 leaves headroom.
+DELTA_MAX_BUDGET_USD="${BRAIN_DELTA_CLASSIFIER_MAX_BUDGET_USD:-0.40}"
+DELTA_MAX_INPUT_BYTES="${BRAIN_DELTA_MAX_INPUT_BYTES:-98304}"
+# Per-run aggregate spend ceiling across all dispatches this invocation.
+# Steady-state runs cost cents; this caps the blast radius of a pathological
+# run (mass cold-start, runaway). When hit, remaining sessions are deferred
+# to the next run (markers untouched), not lost. Two runs/day keep a bad day
+# near the daily budget. Override with BRAIN_DELTA_RUN_COST_CEILING_USD.
+DELTA_RUN_COST_CEILING_USD="${BRAIN_DELTA_RUN_COST_CEILING_USD:-3.00}"
 
 mkdir -p "${LOG_DIR}" "${STATE_DIR}"
 [[ -f "${MARKERS_FILE}" ]] || echo '{}' > "${MARKERS_FILE}"
@@ -310,6 +319,13 @@ PY
   total_cache_read_tokens=$((total_cache_read_tokens + ${cache_r:-0}))
 }
 
+# True (exit 0) once this run's accumulated spend has reached the per-run
+# ceiling. awk handles the float compare (bash arithmetic is integer-only).
+over_cost_ceiling() {
+  /usr/bin/awk -v t="${total_cost_usd:-0}" -v c="${DELTA_RUN_COST_CEILING_USD:-3.00}" \
+    'BEGIN { exit !(t + 0 >= c + 0) }'
+}
+
 # Build a RECENT_CAPTURES_FOR_SESSION preamble for the classifier so
 # it can return ALREADY_CAPTURED when the current delta overlaps with
 # content we've already captured for this same session. Dumps the
@@ -381,7 +397,14 @@ PY
 # instruction-shaped content in tool results competing with the
 # classifier prompt).
 filter_transcript_to_conversation() {
-  /usr/bin/python3 - <<'PY'
+  # Run the program from a temp file, not via heredoc: `python3 - <<HEREDOC`
+  # leaves stdin at EOF (the piped transcript is lost), and the `/dev/fd/3`
+  # workaround reads empty stdin under the macOS system Python 3.9.6 that
+  # launchd resolves (it works only on 3.11+). A real script file keeps the
+  # piped JSONL on a clean stdin on every Python version.
+  local prog
+  prog="$(/usr/bin/mktemp -t brain-filter)" || return 1
+  /bin/cat > "${prog}" <<'PY'
 import json, sys
 
 # User content that's just a wrapped tooling tag — Claude Code's
@@ -446,6 +469,10 @@ for line_bytes in raw.split(b"\n"):
     print(f"[{t}]: " + "\n".join(s.strip() for s in texts))
     print()
 PY
+  /usr/bin/python3 "${prog}"
+  local rc=$?
+  /bin/rm -f "${prog}"
+  return "${rc}"
 }
 
 # Run the classifier against a JSONL tail. Prints raw classifier
@@ -481,22 +508,30 @@ run_classifier() {
     schema_args+=(--json-schema "${schema}")
   fi
 
-  # Compute delta size and apply optional truncation. Cap of 0 means
-  # unbounded (used by one-time cold-start runs over big sessions).
-  local delta_size start_offset truncation_note=""
+  local delta_size truncation_note=""
   delta_size=$((file_size - marker))
-  start_offset=$((marker + 1))
-  if [[ "${DELTA_MAX_INPUT_BYTES}" -gt 0 && "${delta_size}" -gt "${DELTA_MAX_INPUT_BYTES}" ]]; then
-    start_offset=$((file_size - DELTA_MAX_INPUT_BYTES + 1))
-    truncation_note="[NOTE: transcript delta is ${delta_size} bytes; truncated to last ${DELTA_MAX_INPUT_BYTES} bytes for classifier. Older session content is not visible to this classification.]"
-  fi
 
   # Materialize the prompt once so we can replay it on transient
   # spawn-empty failures without re-running the filter pipeline.
-  local prompt_tmp out_tmp err_tmp
+  local prompt_tmp out_tmp err_tmp conv_tmp
   prompt_tmp=$(/usr/bin/mktemp -t brain-prompt) || return 1
   out_tmp=$(/usr/bin/mktemp -t brain-out) || { /bin/rm -f "${prompt_tmp}"; return 1; }
   err_tmp=$(/usr/bin/mktemp -t brain-err) || { /bin/rm -f "${prompt_tmp}" "${out_tmp}"; return 1; }
+  conv_tmp=$(/usr/bin/mktemp -t brain-conv) || { /bin/rm -f "${prompt_tmp}" "${out_tmp}" "${err_tmp}"; return 1; }
+
+  # Filter the WHOLE delta to conversation first, then keep the last
+  # DELTA_MAX_INPUT_BYTES of *that*. Capping raw bytes before filtering can
+  # land the window entirely inside a tool-output blob, leaving the model an
+  # empty delta; capping filtered conversation guarantees it sees real recent
+  # dialogue. Cap of 0 means unbounded (one-time cold-start runs).
+  if [[ "${delta_size}" -gt 0 ]]; then
+    /usr/bin/tail -c "+$((marker + 1))" "${jsonl}" | filter_transcript_to_conversation > "${conv_tmp}"
+  fi
+  local conv_bytes
+  conv_bytes=$(/usr/bin/stat -f%z "${conv_tmp}" 2>/dev/null || /usr/bin/stat -c%s "${conv_tmp}" 2>/dev/null || echo 0)
+  if [[ "${DELTA_MAX_INPUT_BYTES}" -gt 0 && "${conv_bytes}" -gt "${DELTA_MAX_INPUT_BYTES}" ]]; then
+    truncation_note="[NOTE: filtered conversation is ${conv_bytes} bytes; truncated to the last ${DELTA_MAX_INPUT_BYTES} bytes for the classifier. Older session content is not visible to this classification.]"
+  fi
   {
     /bin/cat "${PROMPT_FILE}"
     echo
@@ -512,11 +547,12 @@ run_classifier() {
     recent_captures_preamble "${session_id}"
     echo
     echo "TRANSCRIPT_DELTA:"
-    # Bound output to delta_size bytes. The filter strips tool noise
-    # / metadata records so the classifier only sees the conversation
-    # (see filter_transcript_to_conversation).
-    if [[ "${delta_size}" -gt 0 ]]; then
-      /usr/bin/tail -c "+${start_offset}" "${jsonl}" | /usr/bin/head -c "${delta_size}" | filter_transcript_to_conversation
+    # Last DELTA_MAX_INPUT_BYTES of filtered conversation (whole file when
+    # under the cap, or cap=0). conv_tmp already holds tool-stripped dialogue.
+    if [[ "${DELTA_MAX_INPUT_BYTES}" -gt 0 ]]; then
+      /usr/bin/tail -c "${DELTA_MAX_INPUT_BYTES}" "${conv_tmp}"
+    else
+      /bin/cat "${conv_tmp}"
     fi
   } > "${prompt_tmp}"
 
@@ -565,7 +601,7 @@ run_classifier() {
   done
 
   /bin/cat "${out_tmp}"
-  /bin/rm -f "${prompt_tmp}" "${out_tmp}" "${err_tmp}"
+  /bin/rm -f "${prompt_tmp}" "${out_tmp}" "${err_tmp}" "${conv_tmp}"
   return "${rc}"
 }
 
@@ -817,12 +853,23 @@ if [[ -s "${QUEUE_FILE}" ]]; then
       continue
     fi
 
+    # Defer the rest of the queue once this run's spend ceiling is reached.
+    # Re-enqueue the untouched event so nothing is lost (processed next run).
+    if over_cost_ceiling; then
+      echo "${event}" >> "${QUEUE_FILE}"
+      continue
+    fi
+
     # Mark BEFORE the classifier call. Even on error/requeue we don't
     # want phase 2 to re-pay for the same delta in the same run.
     phase1_attempted+=("${session_id}")
 
     ctx="$(BRAIN_CTX="${event}" /usr/bin/python3 -c "import json,os; print(json.dumps(json.loads(os.environ['BRAIN_CTX'])))")"
-    raw="$(run_classifier "${transcript_path}" "${marker}" "${trigger}" "${ctx}" "${session_id}" "${current_size}")" || raw=""
+    # No `|| raw=""`: a budget-busted dispatch still prints its envelope on a
+    # non-zero exit. Keep it so accumulate_cost sees the real spend and
+    # apply_outcome can salvage valid JSON; genuinely-empty output (the
+    # spawn-fail case) still falls through to the -z check below.
+    raw="$(run_classifier "${transcript_path}" "${marker}" "${trigger}" "${ctx}" "${session_id}" "${current_size}")"
     if [[ -z "${raw}" ]]; then
       # Spawn / classifier failure — count toward the retry budget so
       # repeated spawn-fails don't bleed forever via re-enqueue.
@@ -847,6 +894,11 @@ fi
 
 shopt -s nullglob
 for jsonl in "${CLAUDE_PROJECTS}"/*/*.jsonl; do
+  # Stop scanning once this run's spend ceiling is reached; unscanned
+  # sessions keep their markers and are picked up next run.
+  if over_cost_ceiling; then
+    break
+  fi
   sessions_scanned=$((sessions_scanned + 1))
   session_id="$(/usr/bin/basename "${jsonl}" .jsonl)"
   if [[ -z "${session_id}" ]]; then
@@ -874,7 +926,10 @@ for jsonl in "${CLAUDE_PROJECTS}"/*/*.jsonl; do
     continue
   fi
 
-  raw="$(run_classifier "${jsonl}" "${marker}" "scheduled" '{"trigger":"scheduled"}' "${session_id}" "${current_size}")" || raw=""
+  # No `|| raw=""`: keep a budget-busted dispatch's envelope (printed on a
+  # non-zero exit) so accumulate_cost sees the real spend and apply_outcome
+  # can salvage valid JSON; genuinely-empty output still hits the -z check.
+  raw="$(run_classifier "${jsonl}" "${marker}" "scheduled" '{"trigger":"scheduled"}' "${session_id}" "${current_size}")"
   if [[ -z "${raw}" ]]; then
     note_session_error "${session_id}" "${jsonl}" \
       "${marker}" "${current_size}" "" "spawn_empty"
