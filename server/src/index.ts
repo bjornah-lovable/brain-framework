@@ -16,7 +16,6 @@
  *   brain-librarian-apply-synthesis
  *
  * CLI-only (not MCP-registered):
- *   ingest          (use `brain-librarian ingest --source ...`)
  *   cost            (use `brain-librarian cost`)
  *   provenance      (folded into brain-read; use mode='provenance')
  */

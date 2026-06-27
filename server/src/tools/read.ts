@@ -11,7 +11,7 @@ export const readSchema = {
   path: z
     .string()
     .describe(
-      "Vault-relative or absolute path under ~/brain/. Examples: 'projects/stuck-mitigation.md', 'feed/2026-05-02.md'.",
+      "Vault-relative or absolute path under ~/brain/. Examples: 'projects/stuck-mitigation.md', 'recent.md', 'index.md'.",
     ),
   block: z
     .string()

@@ -6,17 +6,19 @@ import { parseDoc } from "../lib/frontmatter.js";
 /**
  * Deterministic regeneration of `~/brain/index.md`.
  *
- * Walks the synthesized planes (`projects/`, `feed/`, `knowledge/topics/`)
- * and emits a one-line entry per page from frontmatter only. No LLM,
- * no body parsing — the index is derivable from page state alone, so
- * regenerating from scratch each run is cheaper than tracking diffs.
+ * Walks `projects/` and emits a one-line entry per page from
+ * frontmatter only. No LLM, no body parsing — the index is derivable
+ * from page state alone, so regenerating from scratch each run is
+ * cheaper than tracking diffs.
  *
  * Called at the tail of `consolidate()` and `applySynthesisResults()`,
  * so any consolidation that changes a page's frontmatter (`last_touched`,
  * `status`) flows through to the index.
  *
  * Profile pages and `raw/` are intentionally excluded — they aren't
- * librarian-maintained.
+ * librarian-maintained. The `feed/` plane was retired 2026-05-15 and
+ * `knowledge/topics/` 2026-06-27 (see SCHEMA.md "Retired planes");
+ * neither is collected.
  */
 
 interface ProjectEntry {
@@ -26,20 +28,9 @@ interface ProjectEntry {
   summary?: string;
 }
 
-interface FeedEntry {
-  date: string;
-}
-
-interface TopicEntry {
-  topic: string;
-  last_updated?: string;
-}
-
 export function regenerateIndex(): { path: string; entries: number } {
   const v = vaultPaths();
   const projects = collectProjects(v.projects);
-  const feeds = collectFeeds(v.feed);
-  const topics = collectTopics(resolve(v.knowledge, "topics"));
 
   const lines: string[] = [];
   lines.push("# Brain index", "");
@@ -61,32 +52,11 @@ export function regenerateIndex(): { path: string; entries: number } {
   }
   lines.push("");
 
-  lines.push("## Feed", "");
-  if (feeds.length === 0) {
-    lines.push("(none)");
-  } else {
-    for (const f of feeds) {
-      lines.push(`- [${f.date}](feed/${f.date}.md)`);
-    }
-  }
-  lines.push("");
-
-  lines.push("## Knowledge topics", "");
-  if (topics.length === 0) {
-    lines.push("(none)");
-  } else {
-    for (const t of topics) {
-      const updated = t.last_updated ? ` — updated ${formatDate(t.last_updated)}` : "";
-      lines.push(`- [${t.topic}](knowledge/topics/${t.topic}.md)${updated}`);
-    }
-  }
-  lines.push("");
-
   const body = lines.join("\n");
   writeFileSync(v.index, body, "utf8");
   return {
     path: v.index,
-    entries: projects.length + feeds.length + topics.length,
+    entries: projects.length,
   };
 }
 
@@ -113,33 +83,6 @@ function collectProjects(dir: string): ProjectEntry[] {
     out.push(entry);
   }
   return out.sort((a, b) => (b.last_touched || "").localeCompare(a.last_touched || ""));
-}
-
-function collectFeeds(dir: string): FeedEntry[] {
-  if (!existsSync(dir)) return [];
-  const out: FeedEntry[] = [];
-  for (const fname of readdirSync(dir)) {
-    if (!fname.endsWith(".md")) continue;
-    out.push({ date: fname.replace(/\.md$/, "") });
-  }
-  return out.sort((a, b) => b.date.localeCompare(a.date));
-}
-
-function collectTopics(dir: string): TopicEntry[] {
-  if (!existsSync(dir)) return [];
-  const out: TopicEntry[] = [];
-  for (const fname of readdirSync(dir)) {
-    if (!fname.endsWith(".md")) continue;
-    const topic = fname.replace(/\.md$/, "");
-    const data = readFrontmatter(resolve(dir, fname));
-    const entry: TopicEntry = {
-      topic: (data?.["topic"] as string | undefined) ?? topic,
-    };
-    const updated = data?.["last_updated"];
-    if (typeof updated === "string") entry.last_updated = updated;
-    out.push(entry);
-  }
-  return out.sort((a, b) => a.topic.localeCompare(b.topic));
 }
 
 function readFrontmatter(path: string): Record<string, unknown> | null {

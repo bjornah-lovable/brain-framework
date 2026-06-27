@@ -21,16 +21,21 @@ is opinionated and the conventions are load-bearing.
 
 ## What it does
 
-The vault has three synthesised planes — `projects/` ("where are we
-on X"), `feed/` (daily episodic), `knowledge/topics/` (durable
-cross-project) — plus `profile/` (user-edited only), `raw/`
-(append-only inputs), and `captures/` (agent staging). Agents talk
-to the system through MCP tools (`brain-read`, `brain-search`,
-`brain-capture`, `brain-ingest`, `brain-index`, `brain-status`, plus
-parent-dispatch tools for librarian synthesis). They write only to
-`captures/`; the librarian consolidates them into the synthesised
-planes. A `PreToolUse` hook (`hooks/sacred-paths-guard.sh`, exit 2)
-blocks direct writes to sacred paths as defence-in-depth.
+The vault has one synthesised plane — `projects/` ("where are we on
+X") — plus `profile/` (user-edited only), `raw/voice-samples*/`
+(append-only voice samples), and `captures/` (agent staging). Agents
+talk to the system through MCP tools (`brain-read`, `brain-search`,
+`brain-capture`, `brain-index`, `brain-status`, plus parent-dispatch
+tools for librarian synthesis). They write only to `captures/`; the
+librarian consolidates them into `projects/`. A daily `build-recent.py`
+rebuilds the cross-project chronology at `~/brain/recent.md` from the
+per-project Recent updates blocks. A `PreToolUse` hook
+(`hooks/sacred-paths-guard.sh`, exit 2) blocks direct writes to sacred
+paths as defence-in-depth.
+
+(`feed/` retired 2026-05-15; `knowledge/topics/` plus the empty
+`raw/{articles,imports,showboat}` subdirs retired 2026-06-27. See
+`~/brain/SCHEMA.md` "Retired planes".)
 
 ## Architecture document
 
@@ -132,9 +137,9 @@ guard.
 
 ## Safety invariants
 
-- Agents never write to `projects/`, `feed/`, `knowledge/`, or
-  `profile/`. They write only to `captures/` (via `brain-capture`).
-  The librarian is the sole writer to synthesised planes.
+- Agents never write to `projects/` or `profile/`. They write only to
+  `captures/` (via `brain-capture`). The librarian is the sole writer
+  to `projects/`.
 - The `PreToolUse` sacred-paths guard exits 2 (blocking) on any
   `Write|Edit|MultiEdit|Bash` against sacred paths, with a Bash
   command-string heuristic that flags only write-shaped tokens
@@ -143,10 +148,6 @@ guard.
 - `brain-capture` runs a 15-pattern regex secret scan before writing.
   Hits route to `.brain/needs-review/` and the response surfaces only
   pattern names (never the matched text).
-- `brain-ingest` rejects reserved roots (`~/.ssh`, `~/.aws`, `~/.gnupg`,
-  `~/.config/{gcloud,gh}`, …), reserved filenames (`.env*`, `id_*`,
-  `.pem`, `credentials*`, …), non-text extensions, files >5 MiB, and
-  any path containing `..`.
 - Subagent invocation (the headless fallback path): array argv (no
   shell), env `BRAIN_INTERNAL=1` propagated to prevent recursive
   capture. The default for interactive Claude Code sessions is

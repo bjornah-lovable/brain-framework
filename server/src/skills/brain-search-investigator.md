@@ -12,7 +12,7 @@ below. **No prose, no explanations outside the JSON.**
 {
   "query": "...",
   "intent": "locate | answer | where_are_we | timeline | audit | evidence | prior_art",
-  "scope": ["projects", "feed", "knowledge", "captures"],
+  "scope": ["projects", "captures"],
   "project_slug": "optional",
   "freshness": "any | recent | last_24h | last_7d | last_30d | since:<ISO>",
   "max_sources": 6,

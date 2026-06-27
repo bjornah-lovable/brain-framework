@@ -27,10 +27,10 @@ import {
   BRAIN_SERVER_VERSION,
 } from "../lib/versions.js";
 
+// `feed` removed 2026-05-15; `knowledge` removed 2026-06-27.
+// See SCHEMA.md "Retired planes".
 const SCOPE_VALUES = [
   "projects",
-  "feed",
-  "knowledge",
   "captures",
   "trajectories",
   "raw",
@@ -67,7 +67,7 @@ export const searchSchema = {
     .array(z.enum(SCOPE_VALUES))
     .optional()
     .describe(
-      "Scope of search. Default: ['projects', 'feed', 'knowledge', 'captures'].",
+      "Scope of search. Default: ['projects', 'captures'].",
     ),
   project_slug: z.string().optional(),
   freshness: z.enum(FRESHNESS_VALUES).optional().describe("Default 'any'."),
@@ -139,7 +139,7 @@ export async function brainSearch(input: {
   const scope =
     input.scope && input.scope.length > 0
       ? input.scope
-      : (["projects", "feed", "knowledge", "captures"] as const);
+      : (["projects", "captures"] as const);
 
   const maxCandidates = depth === "deep" ? maxSources * 4 : maxSources * 2;
   // intent=where_are_we with a project_slug switches to a dedicated

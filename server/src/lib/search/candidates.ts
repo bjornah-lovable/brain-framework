@@ -22,8 +22,10 @@ export interface Candidate {
 
 export interface CandidateInput {
   query: string;
+  // `feed` removed 2026-05-15; `knowledge` removed 2026-06-27.
+  // See SCHEMA.md "Retired planes".
   scope: ReadonlyArray<
-    "projects" | "feed" | "knowledge" | "captures" | "trajectories" | "raw"
+    "projects" | "captures" | "trajectories" | "raw"
   >;
   project_slug?: string;
   freshness_cutoff_ms?: number;
@@ -50,9 +52,7 @@ export function generateCandidates(input: CandidateInput): Candidate[] {
       .get() as { n: number };
     if (ftsCount.n > 0) {
       const ftsQuery = ftsToken(input.query);
-      const planeFilter = planes
-        .map((p) => `'${p === "projects" ? "project" : p === "feed" ? "feed" : "knowledge"}'`)
-        .join(",");
+      const planeFilter = planes.map(() => "'project'").join(",");
 
       // Body+heading FTS over blocks_fts.
       const bodyRows = db
@@ -206,18 +206,13 @@ function snippetFor(body: string, query: string): string {
  */
 function filesystemFallback(
   input: CandidateInput,
-  planes: ReadonlyArray<"projects" | "feed" | "knowledge">,
+  planes: ReadonlyArray<"projects">,
 ): Candidate[] {
   const v = vaultPaths();
   const out: Candidate[] = [];
   const q = input.query.toLowerCase();
-  for (const plane of planes) {
-    const dir =
-      plane === "projects"
-        ? v.projects
-        : plane === "feed"
-          ? v.feed
-          : v.knowledge;
+  for (const _plane of planes) {
+    const dir = v.projects;
     let entries: string[];
     try {
       entries = walk(dir);

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # brain — PreToolUse Write/Edit/MultiEdit/Bash guard.
 #
-# Blocks any direct write under the synthesized planes:
-#   ~/brain/profile/, projects/, feed/, knowledge/, index.md,
-#   log.md, .brain/provenance/, .brain/db/.
+# Blocks any direct write under the sacred paths:
+#   ~/brain/profile/, projects/, index.md, log.md, recent.md,
+#   .brain/provenance/, .brain/db/.
+# (`feed/` retired 2026-05-15, `knowledge/` retired 2026-06-27.)
 #
 # Claude Code passes the tool input as JSON on stdin. We extract the
 # candidate path (Write/Edit/MultiEdit) or the command string (Bash),
@@ -34,13 +35,14 @@ if [[ -e "${VAULT_ROOT}" ]]; then
 fi
 
 # Build SACRED with both literal and (when different) real forms.
+# `feed/` retired 2026-05-15, `knowledge/` retired 2026-06-27 (see
+# SCHEMA.md "Retired planes"); neither plane exists, no guard needed.
 sacred_subpaths=(
   "profile"
   "projects"
-  "feed"
-  "knowledge"
   "index.md"
   "log.md"
+  "recent.md"
   ".brain/provenance"
   ".brain/db"
 )
@@ -122,11 +124,41 @@ if [[ -z "${block_reason}" && -n "${command}" ]]; then
   done
 
   if [[ -n "${has_sacred_ref}" ]]; then
+    # Redirects whose target is NOT a sacred path are fine. Strip them
+    # before checking — otherwise `ls ~/brain/projects 2>/dev/null` or
+    # `find ~/brain/captures > /tmp/x` false-positive as writes.
+    #
+    # We delete every `… >[>]?  <token>` redirect from the command,
+    # but only if <token> does NOT contain a sacred-path substring.
+    # Then we apply the write-shape regex to the remainder.
+    pruned_command="${command}"
+    while IFS= read -r tgt; do
+      # Skip targets that themselves contain a sacred ref — those are
+      # the ones we DO want to block.
+      keep=""
+      for s in "${SACRED[@]}"; do
+        rel_tilde="~/${s#${HOME_TILDE}/}"
+        if [[ "${tgt}" == *"${s}"* || "${tgt}" == *"${rel_tilde}"* ]]; then
+          keep="yes"; break
+        fi
+      done
+      if [[ -z "${keep}" ]]; then
+        # Remove a single occurrence of the redirect from the pruned
+        # command. Match `[fd]?[>]+ *<tgt>` where tgt is the exact text.
+        # Escape regex special chars in the target before substitution.
+        esc="$(/usr/bin/python3 -c 'import re,sys; print(re.escape(sys.argv[1]))' "${tgt}")"
+        pruned_command="$(/usr/bin/python3 -c 'import re,sys; pat=r"[0-9]?>>?\s*"+sys.argv[1]; print(re.sub(pat, "", sys.argv[2], count=1))' "${esc}" "${pruned_command}")"
+      fi
+    done < <(/usr/bin/python3 -c 'import re,sys
+m = re.findall(r"[0-9]?>>?\s*(\S+)", sys.argv[1])
+for t in m: print(t)' "${command}")
+
     # `>[^&]` matches `>file`, `> file`, `>>file`, `&>file`, `2>file`
     # — but NOT `>&fd` style stderr-merge redirects (e.g. `2>&1`,
-    # `1>&2`, `>&-`), which are not writes to a path.
+    # `1>&2`, `>&-`), which are not writes to a path. Applied AFTER
+    # pruning non-sacred redirect targets above.
     write_tokens_re='(>[^&]|[[:space:]]tee[[:space:]]|^tee[[:space:]]|[[:space:]]rm[[:space:]]|^rm[[:space:]]|[[:space:]]mv[[:space:]]|^mv[[:space:]]|[[:space:]]cp[[:space:]]|^cp[[:space:]]|sed -i|sed --in-place|truncate|dd of=|chmod[[:space:]]|chown[[:space:]])'
-    if [[ "${command}" =~ ${write_tokens_re} ]]; then
+    if [[ "${pruned_command}" =~ ${write_tokens_re} ]]; then
       block_reason="bash write to sacred path '${matched_path}'"
     fi
   fi
@@ -134,9 +166,9 @@ fi
 
 if [[ -n "${block_reason}" ]]; then
   echo "brain: refusing ${block_reason}." >&2
-  echo "       Synthesized planes are librarian-owned. Use the brain-capture" >&2
-  echo "       MCP tool — agents do not write directly to projects/, feed/," >&2
-  echo "       knowledge/, profile/, index.md, log.md, or .brain/." >&2
+  echo "       projects/ is librarian-owned. Use the brain-capture" >&2
+  echo "       MCP tool — agents do not write directly to projects/," >&2
+  echo "       profile/, index.md, log.md, recent.md, or .brain/." >&2
   echo "       (tool=${tool_name})" >&2
   exit 2
 fi

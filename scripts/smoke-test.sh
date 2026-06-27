@@ -44,10 +44,7 @@ trap cleanup_smoke_vault EXIT
 # we don't seed one — defaults give twice_daily cadence, tier 1.
 mkdir -p "${VAULT}/profile" \
          "${VAULT}/projects" \
-         "${VAULT}/feed" \
-         "${VAULT}/knowledge/topics" \
-         "${VAULT}/raw/articles" \
-         "${VAULT}/raw/imports" \
+         "${VAULT}/raw" \
          "${VAULT}/captures" \
          "${VAULT}/.brain/state" \
          "${VAULT}/.brain/log" \
@@ -135,12 +132,6 @@ echo "--- 6b. brain-read mode=provenance (folded from brain-read-provenance) ---
 # No sidecar yet for profile/me.md → expect found=false, NO_SIDECAR.
 mcp "tools/call" '{"path":"profile/me.md","mode":"provenance"}' "brain-read" \
   | jq -r '.result.content[0].text | fromjson | "  exists=\(.exists) mode=\(.mode) error=\(.error.code // "none")"'
-
-mkdir -p /tmp/brain-smoke && echo "TOKEN=hunter2" > /tmp/brain-smoke/.env
-echo "--- 7. brain-librarian ingest .env rejected (CLI) ---"
-"${NODE}" "${ROOT}/server/dist/librarian/cli.js" ingest --source /tmp/brain-smoke/.env \
-  | jq -r '"  error_code=\(.error.code)"'
-rm -rf /tmp/brain-smoke
 
 echo "--- 8. sacred-paths-guard exit 2 on Write to projects/ ---"
 out=$(echo '{"tool_name":"Write","tool_input":{"file_path":"'"${VAULT}"'/projects/test.md","content":"x"}}' \

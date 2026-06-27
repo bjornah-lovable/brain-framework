@@ -2,8 +2,7 @@
  * Stable block IDs anchor sidecar provenance to sections of synthesized
  * pages even when display headings get edited.
  *
- * Grammar: <plane>.<slug>.<section>.v<integer>
- *   plane:    project | feed | knowledge | topic
+ * Grammar: project.<slug>.<section>.v<integer>
  *   slug:     [a-z0-9-]+
  *   section:  [a-z0-9-]+
  *   v<int>:   schema version of the section's *meaning*
@@ -15,16 +14,21 @@
  *
  *     ## Where we are
  *     <!-- brain:block project.stuck-mitigation.where-we-are.v3 -->
+ *
+ * `feed` was removed from the plane union 2026-05-15 and
+ * `knowledge | topic` were removed 2026-06-27 when those planes were
+ * retired (SCHEMA.md "Retired planes"). No block IDs in those planes
+ * were ever produced, so no existing IDs lose parseability.
  */
 
 const BLOCK_ID_RE =
-  /^(project|feed|knowledge|topic)\.([A-Za-z0-9_-]+)\.([a-z0-9-]+)\.v(\d+)$/;
+  /^(project)\.([A-Za-z0-9_-]+)\.([a-z0-9-]+)\.v(\d+)$/;
 
 const COMMENT_RE = /<!--\s*brain:block\s+([^\s]+)\s*-->/g;
 
 export interface BlockId {
   readonly raw: string;
-  readonly plane: "project" | "feed" | "knowledge" | "topic";
+  readonly plane: "project";
   readonly slug: string;
   readonly section: string;
   readonly version: number;

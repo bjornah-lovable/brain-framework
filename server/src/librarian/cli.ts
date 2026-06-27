@@ -22,7 +22,6 @@ import { brainLibrarianPlanSynthesis } from "../tools/librarian-plan-synthesis.j
 import { brainLibrarianApplySynthesis } from "../tools/librarian-apply-synthesis.js";
 import { brainCapture } from "../tools/capture.js";
 import { brainCost } from "../tools/cost.js";
-import { brainIngest } from "../tools/ingest.js";
 import { importPointers } from "./import-pointers.js";
 import { brainLibrarianPlanImports } from "../tools/librarian-plan-imports.js";
 import { loadConfig } from "../lib/config.js";
@@ -253,25 +252,6 @@ async function main(): Promise<void> {
         else if (args[i] === "--until" && args[i + 1]) until = args[++i];
       }
       console.log(JSON.stringify(brainCost({ since, until })));
-      return;
-    }
-    case "ingest": {
-      if (!source) {
-        console.error(
-          "usage: brain-librarian ingest --source <abs-path> [--topic-hint <hint>]",
-        );
-        process.exit(2);
-      }
-      const args = process.argv.slice(3);
-      let topicHint: string | undefined;
-      for (let i = 0; i < args.length; i++) {
-        if (args[i] === "--topic-hint" && args[i + 1]) topicHint = args[++i];
-      }
-      const input: { source_path: string; topic_hint?: string } = {
-        source_path: source,
-      };
-      if (topicHint) input.topic_hint = topicHint;
-      console.log(JSON.stringify(brainIngest(input)));
       return;
     }
     case "config-export": {

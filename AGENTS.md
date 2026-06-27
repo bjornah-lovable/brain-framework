@@ -41,23 +41,26 @@ requires updating `~/.claude.json`.
 ## Hard invariants — from `SCHEMA.md`
 
 - Agents write **only** to `~/brain/captures/` (via `mcp__brain__brain-capture`).
-  The librarian is the sole writer to synthesized planes (`projects/`,
-  `feed/`, `knowledge/`).
+  The librarian is the sole writer to `projects/`.
 - A `PreToolUse` sacred-paths-guard hook blocks any
-  `Write|Edit|MultiEdit|Bash` against synthesized planes; the MCP server
-  enforces the same in code.
-- `~/brain/raw/` is append-only. Superseding sources go in as new files.
+  `Write|Edit|MultiEdit|Bash` against `projects/`, `profile/`, `index.md`,
+  `log.md`, `recent.md`; the MCP server enforces the same in code.
+- `~/brain/raw/voice-samples*/` is append-only. Superseding voice samples
+  go in as new files.
 - `~/brain/.brain/db/` is a derived index — fully rebuildable from the
   filesystem.
+- `~/brain/recent.md` is a derived view aggregated from project pages'
+  `## Recent updates` blocks. Hand edits get overwritten on the next
+  rebuild (`scripts/build-recent.py`, daily 18:15).
 
 ## Cadence intent — from `SCHEMA.md`
 
 | plane | cadence | implication for schedule changes |
 |---|---|---|
 | `projects/` | **sub-daily, per project** | Pages must reflect captures within hours, not days. |
-| `feed/` | daily | One rollover per day. |
-| `knowledge/topics/` | slow (per ingest) | Re-synthesis on ingest events, not periodic. |
 | `profile/` | Bjorn-edited only | Agent read-only. |
+| `raw/voice-samples*/` | append-only | Add new samples; never edit existing ones. |
+| `recent.md` (derived) | daily 18:15 | Rebuilt from project Recent updates blocks. |
 
 If you propose changing the consolidate / synthesize / capture cadence,
 check this table. "Every few days" is **not** sub-daily.

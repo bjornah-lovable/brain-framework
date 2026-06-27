@@ -5,43 +5,6 @@ import { vaultPaths, sacredPaths } from "./vault.js";
 
 const HOME = homedir();
 
-/**
- * Absolute paths that brain-ingest must never accept as a source,
- * even if the agent passes them explicitly. These are dirs that
- * commonly hold secrets or auth material.
- */
-const FORBIDDEN_INGEST_ROOTS: readonly string[] = [
-  resolve(HOME, ".ssh"),
-  resolve(HOME, ".aws"),
-  resolve(HOME, ".gnupg"),
-  resolve(HOME, ".config", "gcloud"),
-  resolve(HOME, ".config", "gh"),
-  resolve(HOME, ".kube"),
-  resolve(HOME, ".docker"),
-  resolve(HOME, ".npmrc"),
-  resolve(HOME, ".netrc"),
-  resolve(HOME, ".claude"),
-];
-
-/**
- * Filename patterns that brain-ingest rejects, regardless of location.
- * Matched case-insensitively against the basename and against any
- * segment of the resolved path.
- */
-const FORBIDDEN_NAME_PATTERNS: readonly RegExp[] = [
-  /^\.env(\..+)?$/i,
-  /^\.envrc$/i,
-  /^id_[a-z0-9_]+$/i, // id_rsa, id_ed25519, id_ecdsa, …
-  /\.pem$/i,
-  /\.p12$/i,
-  /\.pfx$/i,
-  /\.key$/i,
-  /\.keystore$/i,
-  /^credentials(\..+)?$/i,
-  /^service-account.*\.json$/i,
-  /^secret(s)?(\..+)?$/i,
-];
-
 export class SafetyError extends Error {
   readonly code: string;
   constructor(code: string, message: string) {
@@ -125,33 +88,6 @@ export function resolveContentPath(input: string): string {
 }
 
 /**
- * Validate an external path being ingested. Rejects forbidden roots
- * and forbidden filename patterns. The caller is expected to have
- * realpath()'d the input already.
- */
-export function assertIngestSourceSafe(absResolved: string): void {
-  for (const root of FORBIDDEN_INGEST_ROOTS) {
-    if (absResolved === root || absResolved.startsWith(root + sep)) {
-      throw new SafetyError(
-        "FORBIDDEN_INGEST_ROOT",
-        `Ingest source under protected root (${root}): ${absResolved}`,
-      );
-    }
-  }
-  const segments = absResolved.split(sep);
-  for (const seg of segments) {
-    for (const pat of FORBIDDEN_NAME_PATTERNS) {
-      if (pat.test(seg)) {
-        throw new SafetyError(
-          "FORBIDDEN_FILENAME",
-          `Ingest source matches secret-pattern (${pat.source}): ${absResolved}`,
-        );
-      }
-    }
-  }
-}
-
-/**
  * True if a path resolves under any sacred plane. Used by the MCP
  * server to refuse direct writes to synthesized planes from any
  * tool other than the librarian.
@@ -212,16 +148,18 @@ export function assertSourceProjectsAllowed(
 
 /**
  * Allowed write locations for the MCP server itself (NOT the
- * librarian). The MCP server is permitted to write only to
- * captures/ and raw/imports/.
+ * librarian). The MCP server is permitted to write only to captures/
+ * and the operator-runtime substrate (needs-review, search runs, logs,
+ * state).
+ *
+ * Note: the legacy raw/imports allowance was dropped 2026-06-27 when
+ * the ingest pipeline was retired (SCHEMA.md "Retired planes").
  */
 export function assertMcpWriteAllowed(absResolved: string): void {
   const v = vaultPaths();
   const ok =
     absResolved === v.captures ||
     absResolved.startsWith(v.captures + sep) ||
-    absResolved === v.rawImports ||
-    absResolved.startsWith(v.rawImports + sep) ||
     absResolved === v.needsReview ||
     absResolved.startsWith(v.needsReview + sep) ||
     absResolved === v.searchRuns ||
