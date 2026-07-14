@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
-    "better-sqlite3": "^11.6.0",
+    "better-sqlite3": "^12.11.1",
     "gray-matter": "^4.0.3",
     "ulid": "^2.3.0",
     "yaml": "^2.6.1",
