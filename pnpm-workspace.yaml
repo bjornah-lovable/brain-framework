@@ -1,0 +1,10 @@
+# Package settings live here as of pnpm 10.6+/11 — pnpm no longer reads the
+# "pnpm" field from package.json (it warns and ignores it).
+#
+# onlyBuiltDependencies is the supply-chain allowlist: the only packages
+# permitted to run install/build lifecycle scripts. better-sqlite3 compiles a
+# native addon (against the current Node ABI) and must be allowed to build.
+# Secure install flow: `pnpm install --ignore-scripts` then
+# `./scripts/rebuild-native.sh` (see README).
+onlyBuiltDependencies:
+  - better-sqlite3
