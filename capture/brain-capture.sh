@@ -81,6 +81,12 @@ if config_lines="$("${NODE_BIN}" "${LIBRARIAN_CLI}" config-export 2>/dev/null)";
 fi
 
 DELTA_MODEL="${BRAIN_DELTA_CLASSIFIER_MODEL:-claude-sonnet-4-6}"
+# Codex sessions are summarised by a cheaper model, selected by transcript
+# path in run_classifier (a path under …/.codex/… → this model). The delta
+# is a plain conversation summary and Codex session volume is high, so
+# Haiku 4.5 (~3x cheaper than Sonnet, 200K context) is the right tier here.
+# Claude Code sessions keep DELTA_MODEL. Override via env if needed.
+CODEX_DELTA_MODEL="${BRAIN_CODEX_DELTA_CLASSIFIER_MODEL:-claude-haiku-4-5}"
 # Fallbacks (used only if config-export fails) match config.yaml and must
 # stay mutually affordable: a dispatch at the input cap completes under the
 # budget. 96 KB filtered ≈ $0.15/call; $0.40 leaves headroom.
@@ -383,13 +389,20 @@ else:
 PY
 }
 
-# Filter raw Claude Code transcript JSONL down to just the conversation:
+# Filter a raw agent transcript JSONL down to just the conversation:
 # human-typed user messages and assistant text replies. Tool calls,
 # tool results, attachments, file-history snapshots, custom-title /
 # agent-name / permission-mode metadata records, and any other non-text
 # record types are dropped. Stdin: raw JSONL bytes. Stdout: plain
 # text blocks prefixed with "[user]:" / "[assistant]:" separated by
 # blank lines.
+#
+# Handles both transcript formats the worker sees, auto-detected per
+# record: Claude Code ({"type":"user"|"assistant","message":{content}})
+# and Codex rollouts ({"type":"response_item","payload":{"type":
+# "message","role":...,"content":[{"type":"input_text"|"output_text",
+# "text":...}]}}). Everything else the format-agnostic worker (markers,
+# byte-offset deltas, cost, quarantine) already handles identically.
 #
 # Why: the classifier only needs the conversation to decide what to
 # capture. Sending raw JSONL with tool noise wastes tokens AND tends
@@ -423,17 +436,22 @@ def is_tooling_string(s):
     s = s.lstrip()
     return any(s.startswith(p) for p in TOOLING_TAG_PREFIXES)
 
+# Text content items carry different `type` tags across formats:
+# Claude Code uses "text"; Codex uses "input_text" (user/developer)
+# and "output_text" (assistant).
+TEXT_ITEM_TYPES = ("text", "input_text", "output_text")
+
 def collect_texts(content, drop_tooling=False):
-    """Return a list of text strings from a message.content value.
+    """Return a list of text strings from a message content value.
     If drop_tooling=True (user records), skip strings that are
-    just wrapped Claude-Code tooling tags."""
+    just wrapped agent tooling tags."""
     out = []
     if isinstance(content, str):
         if content.strip() and not (drop_tooling and is_tooling_string(content)):
             out.append(content)
     elif isinstance(content, list):
         for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
+            if isinstance(item, dict) and item.get("type") in TEXT_ITEM_TYPES:
                 t = item.get("text", "")
                 if isinstance(t, str) and t.strip() and not (drop_tooling and is_tooling_string(t)):
                     out.append(t)
@@ -455,18 +473,33 @@ for line_bytes in raw.split(b"\n"):
         d = json.loads(line)
     except Exception:
         continue
-    t = d.get("type", "")
-    if t not in ("user", "assistant"):
+    rtype = d.get("type", "")
+    if rtype in ("user", "assistant"):
+        # Claude Code record.
+        msg = d.get("message")
+        if not isinstance(msg, dict):
+            continue
+        role = rtype
+        content = msg.get("content")
+    elif rtype == "response_item":
+        # Codex rollout record. Only message payloads carry conversation;
+        # skip developer/system roles and non-message payloads (reasoning,
+        # function calls, etc.).
+        payload = d.get("payload")
+        if not isinstance(payload, dict) or payload.get("type") != "message":
+            continue
+        role = payload.get("role", "")
+        if role not in ("user", "assistant"):
+            continue
+        content = payload.get("content")
+    else:
         continue
-    msg = d.get("message")
-    if not isinstance(msg, dict):
-        continue
-    texts = collect_texts(msg.get("content"), drop_tooling=(t == "user"))
+    texts = collect_texts(content, drop_tooling=(role == "user"))
     if not texts:
-        # type=user with only tool_result / tooling tags, or assistant
-        # with only tool_use / thinking, etc.
+        # user record with only tool_result / tooling tags, or assistant
+        # with only tool_use / thinking / reasoning, etc.
         continue
-    print(f"[{t}]: " + "\n".join(s.strip() for s in texts))
+    print(f"[{role}]: " + "\n".join(s.strip() for s in texts))
     print()
 PY
   /usr/bin/python3 "${prog}"
@@ -493,6 +526,13 @@ run_classifier() {
   if [[ -z "${file_size}" ]]; then
     file_size=$(/usr/bin/stat -f%z "${jsonl}" 2>/dev/null || /usr/bin/stat -c%s "${jsonl}" 2>/dev/null || echo 0)
   fi
+
+  # Codex rollouts (…/.codex/…) get the cheaper CODEX_DELTA_MODEL; Claude
+  # Code sessions keep DELTA_MODEL.
+  local model="${DELTA_MODEL}"
+  case "${jsonl}" in
+    *"/.codex/"*) model="${CODEX_DELTA_MODEL}" ;;
+  esac
 
   local settings_args=()
   if [[ -f "${SETTINGS_BARE}" ]]; then
@@ -567,7 +607,7 @@ run_classifier() {
     BRAIN_INTERNAL=1 "${CLAUDE_BIN}" \
       --bare \
       -p \
-      --model "${DELTA_MODEL}" \
+      --model "${model}" \
       --tools "" \
       --no-session-persistence \
       --max-turns 1 \
@@ -740,10 +780,17 @@ apply_outcome() {
         return 0
       fi
 
+      # Attribute the capture to the runtime that produced the transcript:
+      # Codex rollouts live under …/.codex/…, everything else is Claude Code.
+      local owner="claude_code"
+      case "${transcript_path}" in
+        *"/.codex/"*) owner="codex" ;;
+      esac
+
       capture_input="$(BRAIN_BODY="${body}" BRAIN_SLUG="${slug}" \
         BRAIN_TRIGGER="${trigger}" BRAIN_SESSION_ID="${session_id}" \
         BRAIN_KIND="${kind}" BRAIN_IMPORTANCE="${importance}" \
-        BRAIN_CONFIDENCE="${confidence}" \
+        BRAIN_CONFIDENCE="${confidence}" BRAIN_OWNER="${owner}" \
         /usr/bin/python3 - <<'PY'
 import json, os
 inp = {
@@ -751,6 +798,7 @@ inp = {
   "project_slug": os.environ["BRAIN_SLUG"],
   "trigger": os.environ["BRAIN_TRIGGER"],
   "session_id": os.environ["BRAIN_SESSION_ID"],
+  "owner": os.environ["BRAIN_OWNER"],
 }
 for k, env in (
   ("capture_kind", "BRAIN_KIND"),

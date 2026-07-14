@@ -1,5 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "BrainCaptureDelta",
   "description": "Output contract for the headless brain-capture-delta classifier. Exactly one of the outcomes from PLAN_v3 §2.5 empty-capture lifecycle. Body fields are required only on CAPTURE_CREATED.",
   "type": "object",
